@@ -1,6 +1,10 @@
-# ClawCar
+<p align="center">
+  <img src="assets/icons/clawcar-logo.png" alt="ClawCar" width="400">
+</p>
 
-**Voice-first mobile client for [OpenClaw](https://github.com/openclaw/openclaw) AI gateway with CarPlay and Android Auto support.**
+<p align="center">
+  <strong>Voice-first mobile client for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> AI gateway with CarPlay and Android Auto support.</strong>
+</p>
 
 Talk to your AI agents while driving. ClawCar connects to your self-hosted OpenClaw gateway and provides a hands-free voice interface — on your phone, CarPlay, or Android Auto.
 
