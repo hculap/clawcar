@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/audio/vad_service.dart';
 import '../../shared/models/agent.dart';
 import '../../shared/models/session.dart';
+import '../../shared/models/vad_event.dart';
 import '../../shared/providers/providers.dart';
 
 class VoiceChatScreen extends ConsumerStatefulWidget {
@@ -17,6 +21,7 @@ class VoiceChatScreen extends ConsumerStatefulWidget {
 class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
   VoiceSessionState _sessionState = VoiceSessionState.idle;
   String _statusText = 'Tap to speak';
+  final List<StreamSubscription<dynamic>> _subscriptions = [];
 
   @override
   void initState() {
@@ -28,16 +33,50 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
     final vad = ref.read(vadProvider);
     await vad.initialize();
 
-    vad.stateChanges.listen((state) {
-      if (!mounted) return;
-      setState(() {
-        switch (state) {
-          case _:
-            // VAD state mapping handled in full implementation
+    _subscriptions.add(
+      vad.stateChanges.listen((vadState) {
+        if (!mounted) return;
+        setState(() {
+          switch (vadState) {
+            case VadState.idle:
+              _sessionState = VoiceSessionState.idle;
+              _statusText = 'Tap to speak';
+            case VadState.listening:
+              _sessionState = VoiceSessionState.listening;
+              _statusText = 'Listening...';
+            case VadState.speechDetected:
+              _sessionState = VoiceSessionState.listening;
+              _statusText = 'Hearing you...';
+            case VadState.speechEnded:
+              _sessionState = VoiceSessionState.processing;
+              _statusText = 'Processing...';
+          }
+        });
+      }),
+    );
+
+    _subscriptions.add(
+      vad.events.listen((event) {
+        if (!mounted) return;
+        switch (event) {
+          case VadSpeechEnd(:final audioData):
+            _handleSpeechEnd(audioData);
+          case VadSpeechStart():
             break;
         }
-      });
-    });
+      }),
+    );
+  }
+
+  void _handleSpeechEnd(List<double> audioData) {
+    final client = ref.read(gatewayClientProvider);
+    if (client == null) return;
+
+    // Convert float samples [-1.0, 1.0] to PCM16 integers for the gateway.
+    final pcm16 = audioData
+        .map((s) => (s * 32767).round().clamp(-32768, 32767))
+        .toList();
+    client.sendAudio(pcm16);
   }
 
   Future<void> _toggleListening() async {
@@ -56,6 +95,14 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
         _statusText = 'Listening...';
       });
     }
+  }
+
+  @override
+  void dispose() {
+    for (final sub in _subscriptions) {
+      sub.cancel();
+    }
+    super.dispose();
   }
 
   @override
@@ -79,7 +126,6 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Status indicator
             AnimatedContainer(
               duration: const Duration(milliseconds: 300),
               width: _sessionState == VoiceSessionState.listening ? 200 : 160,
@@ -104,8 +150,8 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
             Text(
               _statusText,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
             ),
             const SizedBox(height: 8),
             if (_sessionState == VoiceSessionState.processing)
