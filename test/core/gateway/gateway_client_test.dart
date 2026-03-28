@@ -485,6 +485,232 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(client.isDisposed, isTrue);
     });
+
+    test('sends connect handshake on reconnection', () async {
+      // Track channels so we can respond to the second one.
+      final channels = <_FakeWebSocketChannel>[];
+      final reconnectClient = GatewayClient(
+        host: 'localhost',
+        port: 18789,
+        authToken: 'tok',
+        channelFactory: (_) {
+          final ch = _FakeWebSocketChannel();
+          channels.add(ch);
+          return ch;
+        },
+        random: _FixedRandom(0.5),
+      );
+
+      // Initial connect + handshake.
+      await reconnectClient.connect();
+      final firstChannel = channels.first;
+
+      // Initiate sendConnect so the client caches clientId/deviceId.
+      final handshakeFuture = reconnectClient.sendConnect(
+        clientId: 'c1',
+        deviceId: 'd1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      // Server responds OK to the initial connect handshake.
+      firstChannel.serverSend({
+        'type': 'res',
+        'id': firstChannel.lastSent!['id'] as String,
+        'ok': true,
+        'payload': {},
+      });
+      await handshakeFuture;
+
+      // Simulate disconnect → reconnecting.
+      firstChannel.serverClose();
+      await Future<void>.delayed(Duration.zero);
+      expect(reconnectClient.state, ConnectionState.reconnecting);
+
+      // The reconnect timer fires after ~1s (attempt 0 with 0 jitter).
+      // Advance past the backoff delay.
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+      // A second channel should have been created.
+      expect(channels, hasLength(2));
+      final secondChannel = channels[1];
+
+      // The client should have automatically sent a connect request
+      // with the cached clientId and deviceId.
+      await Future<void>.delayed(Duration.zero);
+      final sent = secondChannel._sink.messages
+          .map((m) => jsonDecode(m as String) as Map<String, dynamic>)
+          .toList();
+      final connectFrame = sent.firstWhere(
+        (f) => f['method'] == 'connect',
+        orElse: () => <String, dynamic>{},
+      );
+
+      expect(connectFrame, isNotEmpty);
+      expect(connectFrame['params']['client']['id'], 'c1');
+      expect(connectFrame['params']['device']['id'], 'd1');
+      expect(connectFrame['params']['auth']['token'], 'tok');
+
+      reconnectClient.dispose();
+    });
+
+    test('preserves backoff when handshake fails on reconnect', () async {
+      // If the WebSocket opens but the handshake is rejected,
+      // _reconnectAttempt must NOT be reset so backoff keeps increasing.
+      var connectCount = 0;
+      final channels = <_FakeWebSocketChannel>[];
+      final reconnectClient = GatewayClient(
+        host: 'localhost',
+        port: 18789,
+        channelFactory: (_) {
+          connectCount++;
+          final ch = _FakeWebSocketChannel();
+          channels.add(ch);
+          return ch;
+        },
+        random: _FixedRandom(0.5), // 0 jitter → exact power-of-2 delays
+      );
+
+      // Initial connect + handshake to cache params.
+      await reconnectClient.connect();
+      final firstCh = channels.first;
+      final handshakeFuture = reconnectClient.sendConnect(
+        clientId: 'c',
+        deviceId: 'd',
+      );
+      await Future<void>.delayed(Duration.zero);
+      firstCh.serverSend({
+        'type': 'res',
+        'id': firstCh.lastSent!['id'] as String,
+        'ok': true,
+        'payload': {},
+      });
+      await handshakeFuture;
+
+      // Trigger reconnection.
+      firstCh.serverClose();
+      await Future<void>.delayed(Duration.zero);
+      expect(reconnectClient.state, ConnectionState.reconnecting);
+
+      // First reconnect attempt fires after ~1s backoff.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(channels, hasLength(2));
+
+      // Reject the connect handshake on the second channel.
+      final secondCh = channels[1];
+      await Future<void>.delayed(Duration.zero);
+      final secondSent = secondCh._sink.messages
+          .map((m) => jsonDecode(m as String) as Map<String, dynamic>)
+          .toList();
+      final connectFrame = secondSent.firstWhere(
+        (f) => f['method'] == 'connect',
+        orElse: () => <String, dynamic>{},
+      );
+      expect(connectFrame, isNotEmpty);
+      secondCh.serverSend({
+        'type': 'res',
+        'id': connectFrame['id'] as String,
+        'ok': false,
+        'error': {
+          'code': 'AUTH_FAILED',
+          'message': 'bad token',
+          'retryable': true,
+        },
+      });
+
+      // Allow the rejection to propagate.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final attemptsAfterFirstFail = connectCount;
+
+      // With correct backoff the second attempt should use ~2s delay.
+      // Wait 1.2s — a reset-to-0 bug would fire another attempt at ~1s.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(connectCount, attemptsAfterFirstFail,
+          reason: 'Backoff should increase after failed handshake');
+
+      reconnectClient.dispose();
+    });
+
+    test('does not double-increment backoff on mid-handshake socket drop',
+        () async {
+      // When the socket drops during await sendConnect(), _onDone fires
+      // and schedules a reconnect. The catch block in connect() must NOT
+      // schedule a second reconnect (which would double-increment the
+      // attempt counter and skip a backoff step).
+      final channels = <_FakeWebSocketChannel>[];
+      final reconnectClient = GatewayClient(
+        host: 'localhost',
+        port: 18789,
+        channelFactory: (_) {
+          final ch = _FakeWebSocketChannel();
+          channels.add(ch);
+          return ch;
+        },
+        random: _FixedRandom(0.5),
+      );
+
+      // Initial connect + handshake to cache params.
+      await reconnectClient.connect();
+      final firstCh = channels.first;
+      final handshakeFuture = reconnectClient.sendConnect(
+        clientId: 'c',
+        deviceId: 'd',
+      );
+      await Future<void>.delayed(Duration.zero);
+      firstCh.serverSend({
+        'type': 'res',
+        'id': firstCh.lastSent!['id'] as String,
+        'ok': true,
+        'payload': {},
+      });
+      await handshakeFuture;
+
+      // Trigger reconnection.
+      firstCh.serverClose();
+      await Future<void>.delayed(Duration.zero);
+      expect(reconnectClient.state, ConnectionState.reconnecting);
+
+      // First reconnect fires after ~1s. The new socket opens and
+      // sendConnect is sent automatically.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(channels, hasLength(2));
+      final secondCh = channels[1];
+      await Future<void>.delayed(Duration.zero);
+
+      // Drop the socket mid-handshake (before responding to connect).
+      // This triggers _onDone → _scheduleReconnect (attempt 1 → 2s).
+      secondCh.serverClose();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      // With correct single-increment (attempt=1 → 2s backoff), a third
+      // connect should NOT fire within 1.2s. A double-increment bug
+      // (attempt=2 → 4s) would also pass this check, but the important
+      // thing is we don't get attempt=0 (1s) which would fire too fast.
+      final channelsBeforeWait = channels.length;
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(channels.length, channelsBeforeWait,
+          reason:
+              'Mid-handshake drop should not reset backoff to minimum');
+
+      // Wait long enough for the 2s backoff to fire.
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      expect(channels.length, channelsBeforeWait + 1,
+          reason: 'Third reconnect should fire after ~2s backoff');
+
+      reconnectClient.dispose();
+    });
+
+    test('skips handshake on first connect when no cached params', () async {
+      // On the very first connect() the client has no cached params,
+      // so it should NOT send a connect frame automatically.
+      await client.connect();
+
+      final sent = fakeChannel._sink.messages;
+      // Only heartbeat pings may appear, no connect frame.
+      final connectFrames = sent
+          .map((m) => jsonDecode(m as String) as Map<String, dynamic>)
+          .where((f) => f['method'] == 'connect');
+      expect(connectFrames, isEmpty);
+    });
   });
 
   group('backoff duration', () {
