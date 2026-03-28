@@ -17,6 +17,9 @@ class GatewayDiscovery {
   List<GatewayConfig> get currentGateways => _gateways.values.toList();
 
   Future<void> startDiscovery() async {
+    _gateways.clear();
+    _gatewaysController.add([]);
+
     _discovery = await nsd.startDiscovery(
       _serviceType,
       autoResolve: true,
@@ -25,18 +28,22 @@ class GatewayDiscovery {
 
     _discovery!.addServiceListener((service, status) {
       final host = service.host;
-      final port = service.port;
+      final srvPort = service.port;
 
-      if (host == null || port == null) return;
+      if (host == null || srvPort == null) return;
 
       final txt = service.txt ?? {};
-      final key = '$host:$port';
+      final gatewayPortStr = _txtValue(txt, 'gatewayPort');
+      final effectivePort = gatewayPortStr != null
+          ? int.tryParse(gatewayPortStr) ?? srvPort
+          : srvPort;
+      final key = '$host:$effectivePort';
 
       switch (status) {
         case nsd.ServiceStatus.found:
           final config = GatewayConfig(
             host: host,
-            port: port,
+            port: effectivePort,
             displayName: _txtValue(txt, 'displayName') ?? service.name ?? host,
             useTls: _txtValue(txt, 'gatewayTls') == '1',
             tlsSha256: _txtValue(txt, 'gatewayTlsSha256'),
