@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,8 +9,11 @@ import '../../car/carplay/carplay_controller.dart';
 import '../../car/carplay/carplay_service.dart';
 import '../../core/audio/audio_player_service.dart';
 import '../../core/audio/audio_recorder.dart';
+import '../../core/audio/energy_vad_config.dart';
+import '../../core/audio/energy_vad_service.dart';
 import '../../core/audio/vad_config.dart';
 import '../../core/audio/vad_service.dart';
+import '../../core/audio/vad_service_base.dart';
 import '../../core/audio/voice_pipeline.dart';
 import '../../core/auth/auth_service.dart';
 import '../../core/auth/credential_store.dart';
@@ -73,7 +77,21 @@ final audioStreamProvider = StreamProvider<Uint8List>((ref) {
 
 final vadConfigProvider = Provider<VadConfig>((ref) => const VadConfig());
 
-final vadProvider = Provider<VadService>((ref) {
+final energyVadConfigProvider =
+    Provider<EnergyVadConfig>((ref) => const EnergyVadConfig());
+
+bool get _useEnergyVad =>
+    Platform.isMacOS || Platform.isLinux || Platform.isWindows;
+
+final vadProvider = Provider<VadServiceBase>((ref) {
+  if (_useEnergyVad) {
+    final config = ref.watch(energyVadConfigProvider);
+    final recorder = ref.watch(audioRecorderProvider);
+    final vad = EnergyVadService(recorder: recorder, config: config);
+    ref.onDispose(vad.dispose);
+    return vad;
+  }
+
   final config = ref.watch(vadConfigProvider);
   final vad = VadService(config: config);
   ref.onDispose(vad.dispose);

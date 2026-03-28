@@ -8,21 +8,26 @@ import 'package:clawcar/core/gateway/gateway_client.dart';
 import 'package:clawcar/core/gateway/gateway_protocol.dart';
 import 'package:clawcar/core/audio/audio_player_service.dart';
 import 'package:clawcar/core/audio/vad_service.dart';
+import 'package:clawcar/core/audio/vad_service_base.dart';
 import 'package:clawcar/shared/models/vad_event.dart';
 
 // --- Fakes ---
 
-class FakeVadService extends VadService {
+class FakeVadService implements VadServiceBase {
   final _eventController = StreamController<VadEvent>.broadcast();
   final _stateController = StreamController<VadState>.broadcast();
   bool initialized = false;
   bool listening = false;
+  VadState _state = VadState.idle;
 
   @override
   Stream<VadEvent> get events => _eventController.stream;
 
   @override
   Stream<VadState> get stateChanges => _stateController.stream;
+
+  @override
+  VadState get state => _state;
 
   @override
   Future<void> initialize() async {
@@ -32,12 +37,14 @@ class FakeVadService extends VadService {
   @override
   Future<void> startListening({Stream<Uint8List>? audioStream}) async {
     listening = true;
+    _state = VadState.listening;
     _stateController.add(VadState.listening);
   }
 
   @override
   Future<void> stopListening() async {
     listening = false;
+    _state = VadState.idle;
     _stateController.add(VadState.idle);
   }
 
