@@ -6,6 +6,7 @@ import '../../shared/models/vad_event.dart';
 import '../gateway/gateway_client.dart';
 import '../gateway/gateway_protocol.dart';
 import 'audio_player_service.dart';
+import 'audio_recorder.dart';
 import 'vad_service.dart' show VadState;
 import 'vad_service_base.dart';
 
@@ -27,6 +28,7 @@ class VoicePipeline {
   final GatewayClient _gateway;
   final VadServiceBase _vad;
   final AudioPlayerBase _player;
+  final AudioRecorderBase _recorder;
 
   final _stateController = StreamController<PipelineState>.broadcast();
   final _errorController = StreamController<VoicePipelineError>.broadcast();
@@ -35,15 +37,19 @@ class VoicePipeline {
   StreamSubscription<VadSpeechEnd>? _speechSub;
   StreamSubscription<GatewayEvent>? _eventSub;
   StreamSubscription<dynamic>? _playerSub;
+  StreamSubscription<Uint8List>? _audioBufferSub;
+  final List<Uint8List> _audioBuffer = [];
   bool _disposed = false;
 
   VoicePipeline({
     required GatewayClient gateway,
     required VadServiceBase vad,
     required AudioPlayerBase player,
+    required AudioRecorderBase recorder,
   })  : _gateway = gateway,
         _vad = vad,
-        _player = player;
+        _player = player,
+        _recorder = recorder;
 
   PipelineState get state => _state;
   Stream<PipelineState> get stateChanges => _stateController.stream;
@@ -60,29 +66,86 @@ class VoicePipeline {
       return;
     }
 
+    _audioBuffer.clear();
+    _audioBufferSub?.cancel();
+
     _speechSub?.cancel();
     _speechSub = _vad.events
         .where((e) => e is VadSpeechEnd)
         .cast<VadSpeechEnd>()
         .listen((event) => _onSpeechEnd(event.audioData));
 
-    await _vad.startListening();
+    _audioBufferSub = _recorder.audioStream.listen(
+      (chunk) => _audioBuffer.add(chunk),
+    );
+
+    await _recorder.startRecording();
+    await _vad.startListening(audioStream: _recorder.audioStream);
     _setState(PipelineState.listening);
   }
 
   Future<void> stopListening() async {
+    _audioBufferSub?.cancel();
+    _audioBufferSub = null;
+
     await _vad.stopListening();
+    await _recorder.stopRecording();
+
     _speechSub?.cancel();
     _speechSub = null;
 
     if (_state == PipelineState.listening) {
-      _setState(PipelineState.idle);
+      final bufferedAudio = _drainAudioBuffer();
+      if (bufferedAudio.isNotEmpty) {
+        _setState(PipelineState.processing);
+        try {
+          await _gateway.sendAudio(bufferedAudio);
+        } catch (e) {
+          _emitError(
+            VoicePipelineError(
+              code: 'send_failed',
+              message: 'Failed to send audio: $e',
+              retryable: true,
+            ),
+          );
+          _setState(PipelineState.error);
+          await Future<void>.delayed(const Duration(seconds: 1));
+          if (!_disposed) {
+            _setState(PipelineState.idle);
+          }
+        }
+      } else {
+        _setState(PipelineState.idle);
+      }
     }
   }
 
+  Uint8List _drainAudioBuffer() {
+    if (_audioBuffer.isEmpty) return Uint8List(0);
+
+    final totalLength =
+        _audioBuffer.fold<int>(0, (sum, chunk) => sum + chunk.length);
+    final combined = Uint8List(totalLength);
+    var offset = 0;
+    for (final chunk in _audioBuffer) {
+      combined.setAll(offset, chunk);
+      offset += chunk.length;
+    }
+    _audioBuffer.clear();
+    return combined;
+  }
+
   Future<void> cancel() async {
+    _audioBufferSub?.cancel();
+    _audioBufferSub = null;
+    _audioBuffer.clear();
+
     await _player.stop();
-    await stopListening();
+    await _vad.stopListening();
+    await _recorder.stopRecording();
+
+    _speechSub?.cancel();
+    _speechSub = null;
     _setState(PipelineState.idle);
   }
 
@@ -101,7 +164,12 @@ class VoicePipeline {
   Future<void> _onSpeechEnd(List<double> floatSamples) async {
     if (_disposed) return;
 
+    _audioBufferSub?.cancel();
+    _audioBufferSub = null;
+    _audioBuffer.clear();
+
     await _vad.stopListening();
+    await _recorder.stopRecording();
     _setState(PipelineState.processing);
 
     try {
@@ -205,6 +273,8 @@ class VoicePipeline {
 
   void dispose() {
     _disposed = true;
+    _audioBufferSub?.cancel();
+    _audioBuffer.clear();
     _speechSub?.cancel();
     _eventSub?.cancel();
     _playerSub?.cancel();

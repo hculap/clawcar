@@ -178,10 +178,13 @@ final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agen
   final player = ref.watch(audioPlayerProvider);
   final continuous = ref.watch(continuousConversationProvider);
 
+  final recorder = ref.watch(audioRecorderProvider);
+
   final pipeline = VoicePipeline(
     gateway: client,
     vad: vad,
     player: player,
+    recorder: recorder,
   )..continuousMode = continuous;
   ref.onDispose(pipeline.dispose);
   return pipeline;
