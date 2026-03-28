@@ -8,9 +8,13 @@ import '../../core/audio/audio_player_service.dart';
 import '../../core/audio/audio_recorder.dart';
 import '../../core/audio/vad_config.dart';
 import '../../core/audio/vad_service.dart';
+import '../../core/auth/auth_service.dart';
+import '../../core/auth/credential_store.dart';
+import '../../core/auth/device_identity_service.dart';
 import '../../core/config/app_config.dart';
 import '../../core/gateway/gateway_client.dart';
 import '../../core/gateway/gateway_discovery.dart';
+import '../../shared/models/auth_models.dart';
 import '../../shared/models/gateway_config.dart';
 import '../../shared/models/vad_event.dart';
 
@@ -82,4 +86,27 @@ final audioPlayerProvider = Provider<AudioPlayerService>((ref) {
   final player = AudioPlayerService();
   ref.onDispose(player.dispose);
   return player;
+});
+
+// -- Auth providers --
+
+final credentialStoreProvider = Provider<CredentialStore>((ref) {
+  return CredentialStore();
+});
+
+final deviceIdentityServiceProvider = Provider<DeviceIdentityService>((ref) {
+  return DeviceIdentityService(store: ref.watch(credentialStoreProvider));
+});
+
+final authServiceProvider = Provider<AuthService>((ref) {
+  final service = AuthService(
+    identityService: ref.watch(deviceIdentityServiceProvider),
+    store: ref.watch(credentialStoreProvider),
+  );
+  ref.onDispose(service.dispose);
+  return service;
+});
+
+final pairingStateProvider = StreamProvider<PairingState>((ref) {
+  return ref.watch(authServiceProvider).pairingStateChanges;
 });
