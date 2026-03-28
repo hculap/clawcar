@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.clawcar.clawcar"
-    compileSdk = flutter.compileSdkVersion.coerceAtLeast(34)
+    compileSdk = flutter.compileSdkVersion.coerceAtLeast(35)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -40,8 +40,8 @@ android {
 }
 
 dependencies {
-    implementation("androidx.car.app:app:1.4.0")
-    implementation("androidx.car.app:app-projected:1.4.0")
+    implementation("androidx.car.app:app:1.7.0")
+    implementation("androidx.car.app:app-projected:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.media:media:1.7.0")
 }
