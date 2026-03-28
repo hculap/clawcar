@@ -3,13 +3,27 @@ import 'dart:typed_data';
 
 import 'package:just_audio/just_audio.dart';
 
-class AudioPlayerService {
+abstract class AudioPlayerBase {
+  bool get isPlaying;
+  Stream<dynamic> get playerState;
+  Future<void> playAudioBytes(Uint8List audioData, {String? mimeType});
+  Future<void> stop();
+  Future<void> pause();
+  Future<void> resume();
+  void dispose();
+}
+
+class AudioPlayerService implements AudioPlayerBase {
   final _player = AudioPlayer();
   bool _isPlaying = false;
 
+  @override
   bool get isPlaying => _isPlaying;
+
+  @override
   Stream<PlayerState> get playerState => _player.playerStateStream;
 
+  @override
   Future<void> playAudioBytes(Uint8List audioData, {String? mimeType}) async {
     _isPlaying = true;
     try {
@@ -21,19 +35,23 @@ class AudioPlayerService {
     }
   }
 
+  @override
   Future<void> stop() async {
     await _player.stop();
     _isPlaying = false;
   }
 
+  @override
   Future<void> pause() async {
     await _player.pause();
   }
 
+  @override
   Future<void> resume() async {
     await _player.play();
   }
 
+  @override
   void dispose() {
     _player.dispose();
   }

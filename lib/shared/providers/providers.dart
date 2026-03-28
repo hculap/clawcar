@@ -8,6 +8,7 @@ import '../../core/audio/audio_player_service.dart';
 import '../../core/audio/audio_recorder.dart';
 import '../../core/audio/vad_config.dart';
 import '../../core/audio/vad_service.dart';
+import '../../core/audio/voice_pipeline.dart';
 import '../../core/auth/auth_service.dart';
 import '../../core/auth/credential_store.dart';
 import '../../core/auth/device_identity_service.dart';
@@ -139,4 +140,22 @@ final agentsProvider = FutureProvider<List<Agent>>((ref) async {
   }
 
   return client.listAgents();
+});
+
+// -- Voice pipeline providers --
+
+final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agentId) {
+  final client = ref.watch(gatewayClientProvider);
+  if (client == null) return null;
+
+  final vad = ref.watch(vadProvider);
+  final player = ref.watch(audioPlayerProvider);
+
+  final pipeline = VoicePipeline(
+    gateway: client,
+    vad: vad,
+    player: player,
+  );
+  ref.onDispose(pipeline.dispose);
+  return pipeline;
 });
