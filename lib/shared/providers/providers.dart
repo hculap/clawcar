@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../car/carplay/carplay_controller.dart';
+import '../../car/carplay/carplay_service.dart';
 import '../../core/audio/audio_player_service.dart';
 import '../../core/audio/audio_recorder.dart';
 import '../../core/audio/vad_config.dart';
@@ -165,4 +167,45 @@ final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agen
   )..continuousMode = continuous;
   ref.onDispose(pipeline.dispose);
   return pipeline;
+});
+
+// -- CarPlay providers --
+
+final carPlayServiceProvider = Provider<CarPlayService>((ref) {
+  return CarPlayService();
+});
+
+final carPlayConnectedProvider = StreamProvider<bool>((ref) {
+  final service = ref.watch(carPlayServiceProvider);
+  return service.events
+      .where((e) =>
+          e.type == 'carplayConnected' || e.type == 'carplayDisconnected')
+      .map((e) => e.type == 'carplayConnected');
+});
+
+final carPlayControllerProvider = Provider<CarPlayController?>((ref) {
+  final service = ref.watch(carPlayServiceProvider);
+  final selectedAgent = ref.watch(selectedAgentProvider);
+  final agentId = selectedAgent?.id;
+  if (agentId == null) return null;
+
+  final pipeline = ref.watch(voicePipelineProvider(agentId));
+  if (pipeline == null) return null;
+
+  final controller = CarPlayController(
+    service: service,
+    pipelineGetter: () => pipeline,
+    onAgentSwitch: (newAgentId) {
+      ref.read(selectedAgentProvider.notifier).state = Agent(
+        id: newAgentId,
+        name: newAgentId,
+      );
+    },
+  );
+
+  controller.start();
+  controller.attachPipeline(pipeline);
+
+  ref.onDispose(controller.dispose);
+  return controller;
 });
