@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,8 +44,12 @@ final gatewayClientProvider = Provider<GatewayClient?>((ref) {
 
 final audioRecorderProvider = Provider<AudioRecorderService>((ref) {
   final recorder = AudioRecorderService();
-  ref.onDispose(recorder.dispose);
+  ref.onDispose(() => recorder.dispose());
   return recorder;
+});
+
+final audioStreamProvider = StreamProvider<Uint8List>((ref) {
+  return ref.watch(audioRecorderProvider).audioStream;
 });
 
 final vadProvider = Provider<VadService>((ref) {
