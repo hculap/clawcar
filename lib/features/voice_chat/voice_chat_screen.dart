@@ -1,12 +1,10 @@
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/audio/vad_service.dart';
+import '../../core/audio/voice_pipeline.dart';
 import '../../shared/models/agent.dart';
-import '../../shared/models/session.dart';
-import '../../shared/models/vad_event.dart';
 import '../../shared/providers/providers.dart';
 
 class VoiceChatScreen extends ConsumerStatefulWidget {
@@ -19,120 +17,130 @@ class VoiceChatScreen extends ConsumerStatefulWidget {
 }
 
 class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
-  bool _initialized = false;
+  PipelineState _pipelineState = PipelineState.idle;
+  String _statusText = 'Tap to speak';
   String? _errorMessage;
+
+  StreamSubscription<PipelineState>? _stateSub;
+  StreamSubscription<VoicePipelineError>? _errorSub;
+  VoicePipeline? _currentPipeline;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
-    _initializeVad();
-  }
-
-  Future<void> _initializeVad() async {
-    try {
-      final vad = ref.read(vadProvider);
-      await vad.initialize();
-      if (!mounted) return;
-      setState(() => _initialized = true);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _initialized = false;
-        _errorMessage = 'Microphone unavailable';
-      });
-    }
-  }
-
-  VoiceSessionState _mapVadState(VadState vadState) {
-    return switch (vadState) {
-      VadState.idle => VoiceSessionState.idle,
-      VadState.listening => VoiceSessionState.listening,
-      VadState.speechDetected => VoiceSessionState.listening,
-      VadState.speechEnded => VoiceSessionState.processing,
-    };
-  }
-
-  String _mapStatusText(VadState vadState) {
-    return switch (vadState) {
-      VadState.idle => 'Tap to speak',
-      VadState.listening => 'Listening...',
-      VadState.speechDetected => 'Hearing you...',
-      VadState.speechEnded => 'Processing...',
-    };
-  }
-
-  void _handleSpeechEnd(List<double> audioData) {
-    final client = ref.read(gatewayClientProvider);
-    if (client == null) return;
-
-    // Convert float samples [-1.0, 1.0] to PCM16 bytes for the gateway.
-    final pcm16 = Int16List.fromList(
-      audioData
-          .map((s) => (s * 32767).round().clamp(-32768, 32767))
-          .toList(),
+    ref.listenManual(
+      voicePipelineProvider(widget.agent.id),
+      (_, next) => _bindPipeline(next),
+      fireImmediately: true,
     );
-    client.sendAudio(pcm16.buffer.asUint8List().toList());
-  }
-
-  void _showError(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  Future<void> _toggleListening() async {
-    final vad = ref.read(vadProvider);
-
-    if (vad.state == VadState.listening ||
-        vad.state == VadState.speechDetected) {
-      await vad.stopListening();
-    } else {
-      await vad.startListening();
-    }
   }
 
   @override
   void dispose() {
-    ref.read(vadProvider).stopListening();
+    _cancelSubscriptions();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final vadState = ref.watch(vadStateProvider);
+  void _cancelSubscriptions() {
+    _stateSub?.cancel();
+    _stateSub = null;
+    _errorSub?.cancel();
+    _errorSub = null;
+  }
 
-    // React to speech events via the StreamProvider.
-    ref.listen<AsyncValue<VadEvent>>(vadEventProvider, (prev, next) {
-      next.whenData((event) {
-        switch (event) {
-          case VadSpeechEnd(:final audioData):
-            _handleSpeechEnd(audioData);
-          case VadSpeechStart():
-            break;
-          case VadError(:final message):
-            _showError(message);
+  void _bindPipeline(VoicePipeline? pipeline) {
+    if (identical(pipeline, _currentPipeline)) return;
+
+    _cancelSubscriptions();
+    _currentPipeline = pipeline;
+    _generation++;
+    final gen = _generation;
+
+    setState(() {
+      _pipelineState = PipelineState.idle;
+      _statusText = 'Tap to speak';
+      _errorMessage = null;
+    });
+
+    if (pipeline == null) return;
+
+    _initializePipeline(pipeline, gen);
+  }
+
+  Future<void> _initializePipeline(VoicePipeline pipeline, int gen) async {
+    try {
+      await pipeline.initialize();
+    } catch (e) {
+      if (!mounted || gen != _generation) return;
+      setState(() {
+        _pipelineState = PipelineState.error;
+        _statusText = 'Failed to initialize';
+        _errorMessage = e.toString();
+      });
+      return;
+    }
+
+    if (!mounted || gen != _generation) return;
+
+    _stateSub = pipeline.stateChanges.listen((state) {
+      if (!mounted) return;
+      setState(() {
+        _pipelineState = state;
+        _statusText = _statusTextFor(state);
+        if (state != PipelineState.error) {
+          _errorMessage = null;
         }
       });
     });
 
-    final currentVadState = vadState.when(
-      data: (state) => state,
-      loading: () => VadState.idle,
-      error: (_, _) => VadState.idle,
-    );
-    final sessionState = _errorMessage != null
-        ? VoiceSessionState.error
-        : _mapVadState(currentVadState);
-    final statusText = _errorMessage ?? _mapStatusText(currentVadState);
+    _errorSub = pipeline.errors.listen((error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+      });
+    });
+  }
 
-    final color = switch (sessionState) {
-      VoiceSessionState.idle => Theme.of(context).colorScheme.primary,
-      VoiceSessionState.listening => Colors.red,
-      VoiceSessionState.processing => Colors.orange,
-      VoiceSessionState.speaking => Colors.green,
-      VoiceSessionState.error => Colors.grey,
+  String _statusTextFor(PipelineState state) {
+    return switch (state) {
+      PipelineState.idle => 'Tap to speak',
+      PipelineState.listening => 'Listening...',
+      PipelineState.processing => 'Processing...',
+      PipelineState.speaking => 'Speaking...',
+      PipelineState.error => 'Something went wrong',
     };
+  }
+
+  Future<void> _onMicPressed() async {
+    final pipeline = _currentPipeline;
+    if (pipeline == null) return;
+
+    try {
+      switch (_pipelineState) {
+        case PipelineState.idle:
+        case PipelineState.error:
+          await pipeline.startListening();
+        case PipelineState.listening:
+          await pipeline.stopListening();
+        case PipelineState.processing:
+        case PipelineState.speaking:
+          await pipeline.cancel();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _pipelineState = PipelineState.error;
+        _statusText = _statusTextFor(PipelineState.error);
+        _errorMessage = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _colorFor(_pipelineState, context);
+    final isActive = _pipelineState == PipelineState.listening;
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
@@ -147,8 +155,8 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
           children: [
             AnimatedContainer(
               duration: const Duration(milliseconds: 300),
-              width: sessionState == VoiceSessionState.listening ? 200 : 160,
-              height: sessionState == VoiceSessionState.listening ? 200 : 160,
+              width: isActive ? 200 : 160,
+              height: isActive ? 200 : 160,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: color.withValues(alpha: 0.15),
@@ -156,28 +164,59 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
               ),
               child: IconButton(
                 iconSize: 64,
-                icon: Icon(
-                  sessionState == VoiceSessionState.listening
-                      ? Icons.mic
-                      : Icons.mic_none,
-                  color: color,
-                ),
-                onPressed: _initialized ? _toggleListening : null,
+                icon: Icon(_iconFor(_pipelineState), color: color),
+                onPressed: _onMicPressed,
               ),
             ),
             const SizedBox(height: 32),
             Text(
-              statusText,
+              _statusText,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 8),
-            if (sessionState == VoiceSessionState.processing)
-              const LinearProgressIndicator(),
+            if (_pipelineState == PipelineState.processing)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 64),
+                child: LinearProgressIndicator(),
+              ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  _errorMessage!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Color _colorFor(PipelineState state, BuildContext context) {
+    return switch (state) {
+      PipelineState.idle => Theme.of(context).colorScheme.primary,
+      PipelineState.listening => Colors.red,
+      PipelineState.processing => Colors.orange,
+      PipelineState.speaking => Colors.green,
+      PipelineState.error => Colors.grey,
+    };
+  }
+
+  IconData _iconFor(PipelineState state) {
+    return switch (state) {
+      PipelineState.idle => Icons.mic_none,
+      PipelineState.listening => Icons.mic,
+      PipelineState.processing => Icons.hourglass_top,
+      PipelineState.speaking => Icons.volume_up,
+      PipelineState.error => Icons.mic_off,
+    };
   }
 }
