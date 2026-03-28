@@ -167,7 +167,7 @@ class GatewayClient {
             'mode': 'operator',
           },
           'role': 'operator',
-          'scopes': ['operator.read', 'operator.write'],
+          'scopes': ['operator.admin', 'operator.read', 'operator.write'],
           if (authToken != null) 'auth': {'token': authToken},
           'device': {'id': deviceId},
         },
