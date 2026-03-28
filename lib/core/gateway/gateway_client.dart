@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../../shared/models/agent.dart';
 import 'gateway_protocol.dart';
 
 /// Connection lifecycle states for [GatewayClient].
@@ -186,6 +187,17 @@ class GatewayClient {
         },
       ),
     );
+  }
+
+  /// Lists available agents from the gateway.
+  Future<List<Agent>> listAgents() async {
+    final response = await send(
+      GatewayRequest(method: 'agent.list', params: {}),
+    );
+    final agents = (response.payload?['agents'] as List<dynamic>?) ?? [];
+    return agents
+        .map((a) => Agent.fromJson(a as Map<String, dynamic>))
+        .toList();
   }
 
   /// Gracefully disconnects from the gateway.

@@ -8,17 +8,18 @@ import 'package:clawcar/core/gateway/gateway_client.dart';
 import 'package:clawcar/core/gateway/gateway_protocol.dart';
 import 'package:clawcar/core/audio/audio_player_service.dart';
 import 'package:clawcar/core/audio/vad_service.dart';
+import 'package:clawcar/shared/models/vad_event.dart';
 
 // --- Fakes ---
 
 class FakeVadService extends VadService {
-  final _speechController = StreamController<List<double>>.broadcast();
+  final _eventController = StreamController<VadEvent>.broadcast();
   final _stateController = StreamController<VadState>.broadcast();
   bool initialized = false;
   bool listening = false;
 
   @override
-  Stream<List<double>> get speechFrames => _speechController.stream;
+  Stream<VadEvent> get events => _eventController.stream;
 
   @override
   Stream<VadState> get stateChanges => _stateController.stream;
@@ -29,7 +30,7 @@ class FakeVadService extends VadService {
   }
 
   @override
-  Future<void> startListening() async {
+  Future<void> startListening({Stream<Uint8List>? audioStream}) async {
     listening = true;
     _stateController.add(VadState.listening);
   }
@@ -40,13 +41,17 @@ class FakeVadService extends VadService {
     _stateController.add(VadState.idle);
   }
 
-  void emitSpeech(List<double> samples) {
-    _speechController.add(samples);
+  void emitSpeechEnd(List<double> samples) {
+    _eventController.add(VadEvent.speechEnd(
+      timestamp: DateTime.now(),
+      audioData: samples,
+      speechDuration: const Duration(seconds: 1),
+    ));
   }
 
   @override
   void dispose() {
-    _speechController.close();
+    _eventController.close();
     _stateController.close();
   }
 }
@@ -63,11 +68,12 @@ class FakeGatewayClient extends GatewayClient {
   Stream<GatewayEvent> get events => _eventController.stream;
 
   @override
-  Future<void> sendAudio(List<int> audioData) async {
+  Future<GatewayResponse> sendAudio(List<int> audioData) async {
     if (sendAudioShouldFail) {
       throw Exception(sendAudioErrorMessage ?? 'Send failed');
     }
     lastSentAudio = audioData;
+    return GatewayResponse(id: 'test', ok: true, payload: {'status': 'ok'});
   }
 
   void emitEvent(GatewayEvent event) {
@@ -187,7 +193,7 @@ void main() {
         await pipeline.startListening();
 
         // Simulate speech end to move to processing
-        vad.emitSpeech([0.5, -0.5, 0.3]);
+        vad.emitSpeechEnd([0.5, -0.5, 0.3]);
         await Future<void>.delayed(Duration.zero);
 
         final stateBefore = pipeline.state;
@@ -202,7 +208,7 @@ void main() {
         await pipeline.startListening();
 
         final samples = [0.5, -0.5, 0.0, 1.0, -1.0];
-        vad.emitSpeech(samples);
+        vad.emitSpeechEnd(samples);
         await Future<void>.delayed(Duration.zero);
 
         expect(gateway.lastSentAudio, isNotNull);
@@ -216,7 +222,7 @@ void main() {
         final states = <PipelineState>[];
         pipeline.stateChanges.listen(states.add);
 
-        vad.emitSpeech([0.1, 0.2]);
+        vad.emitSpeechEnd([0.1, 0.2]);
         await Future<void>.delayed(Duration.zero);
 
         expect(states, contains(PipelineState.processing));
@@ -232,7 +238,7 @@ void main() {
         final errors = <VoicePipelineError>[];
         pipeline.errors.listen(errors.add);
 
-        vad.emitSpeech([0.1]);
+        vad.emitSpeechEnd([0.1]);
         await Future<void>.delayed(Duration.zero);
 
         expect(errors, hasLength(1));
