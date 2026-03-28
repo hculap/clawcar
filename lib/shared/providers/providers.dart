@@ -40,7 +40,9 @@ final discoveredGatewaysProvider = StreamProvider<List<GatewayConfig>>((ref) {
   return discovery.gateways;
 });
 
-final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) => null);
+final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) {
+  return ref.read(appConfigProvider).selectedGateway;
+});
 
 final gatewayClientProvider = Provider<GatewayClient?>((ref) {
   final gateway = ref.watch(selectedGatewayProvider);
