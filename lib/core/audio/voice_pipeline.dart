@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import '../../shared/models/vad_event.dart';
 import '../gateway/gateway_client.dart';
 import '../gateway/gateway_protocol.dart';
 import 'audio_player_service.dart';
@@ -31,7 +30,7 @@ class VoicePipeline {
   final _errorController = StreamController<VoicePipelineError>.broadcast();
 
   PipelineState _state = PipelineState.idle;
-  StreamSubscription<VadSpeechEnd>? _speechSub;
+  StreamSubscription<List<double>>? _speechSub;
   StreamSubscription<GatewayEvent>? _eventSub;
   StreamSubscription<dynamic>? _playerSub;
   bool _disposed = false;
@@ -60,10 +59,7 @@ class VoicePipeline {
     }
 
     _speechSub?.cancel();
-    _speechSub = _vad.events
-        .where((e) => e is VadSpeechEnd)
-        .cast<VadSpeechEnd>()
-        .listen((event) => _onSpeechEnd(event.audioData));
+    _speechSub = _vad.speechFrames.listen(_onSpeechEnd);
 
     await _vad.startListening();
     _setState(PipelineState.listening);

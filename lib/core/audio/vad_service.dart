@@ -40,6 +40,11 @@ class VadService {
   /// Stream of structured speech events (start / end / error).
   Stream<app.VadEvent> get events => _eventController.stream;
 
+  /// Stream of completed speech audio frames (emitted on each speech-end).
+  Stream<List<double>> get speechFrames => _eventController.stream
+      .where((e) => e is app.VadSpeechEnd)
+      .map((e) => (e as app.VadSpeechEnd).audioData);
+
   /// Current VAD state.
   VadState get state => _state;
 
