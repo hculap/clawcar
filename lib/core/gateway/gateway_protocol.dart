@@ -7,29 +7,73 @@ const defaultGatewayPort = 18789;
 
 const _uuid = Uuid();
 
+/// Exception thrown when the gateway returns an error response.
+class GatewayException implements Exception {
+  final String code;
+  final String message;
+  final bool retryable;
+
+  const GatewayException({
+    required this.code,
+    required this.message,
+    this.retryable = false,
+  });
+
+  factory GatewayException.fromError(GatewayError error) {
+    return GatewayException(
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+    );
+  }
+
+  @override
+  String toString() => 'GatewayException($code): $message';
+}
+
+/// Base sealed class for all gateway protocol frames.
+///
+/// The OpenClaw Gateway Protocol v3 uses three frame types:
+/// - `req`   — client-to-server requests (correlated by ID)
+/// - `res`   — server-to-client responses (correlated by ID)
+/// - `event` — server-initiated push events
 sealed class GatewayFrame {
   const GatewayFrame();
 
+  /// Parses a raw JSON string into a typed [GatewayFrame].
+  ///
+  /// Throws [FormatException] if the JSON is malformed or the
+  /// `type` field contains an unknown value.
   factory GatewayFrame.fromJson(String raw) {
-    final json = jsonDecode(raw) as Map<String, dynamic>;
-    final type = json['type'] as String;
+    final dynamic decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Frame must be a JSON object');
+    }
+    final type = decoded['type'];
+    if (type is! String) {
+      throw const FormatException('Frame missing "type" field');
+    }
 
     return switch (type) {
-      'req' => GatewayRequest.fromMap(json),
-      'res' => GatewayResponse.fromMap(json),
-      'event' => GatewayEvent.fromMap(json),
+      'req' => GatewayRequest.fromMap(decoded),
+      'res' => GatewayResponse.fromMap(decoded),
+      'event' => GatewayEvent.fromMap(decoded),
       _ => throw FormatException('Unknown frame type: $type'),
     };
   }
 }
 
+/// A client-to-server request frame.
 class GatewayRequest extends GatewayFrame {
   final String id;
   final String method;
   final Map<String, dynamic> params;
 
-  GatewayRequest({String? id, required this.method, this.params = const {}})
-    : id = id ?? _uuid.v4();
+  GatewayRequest({
+    String? id,
+    required this.method,
+    this.params = const {},
+  }) : id = id ?? _uuid.v4();
 
   factory GatewayRequest.fromMap(Map<String, dynamic> map) {
     return GatewayRequest(
@@ -39,10 +83,15 @@ class GatewayRequest extends GatewayFrame {
     );
   }
 
-  String toJson() =>
-      jsonEncode({'type': 'req', 'id': id, 'method': method, 'params': params});
+  String toJson() => jsonEncode({
+        'type': 'req',
+        'id': id,
+        'method': method,
+        'params': params,
+      });
 }
 
+/// A server-to-client response frame, correlated to a request by [id].
 class GatewayResponse extends GatewayFrame {
   final String id;
   final bool ok;
@@ -68,6 +117,7 @@ class GatewayResponse extends GatewayFrame {
   }
 }
 
+/// A server-initiated push event.
 class GatewayEvent extends GatewayFrame {
   final String event;
   final Map<String, dynamic> payload;
@@ -91,6 +141,7 @@ class GatewayEvent extends GatewayFrame {
   }
 }
 
+/// Structured error returned inside a [GatewayResponse].
 class GatewayError {
   final String code;
   final String message;
