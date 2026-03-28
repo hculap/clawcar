@@ -64,6 +64,10 @@ class GatewayClient {
   bool _disposed = false;
   Completer<void>? _connectCompleter;
 
+  // Cached handshake params for reconnection.
+  String? _cachedClientId;
+  String? _cachedDeviceId;
+
   GatewayClient({
     required this.host,
     required this.port,
@@ -110,12 +114,25 @@ class GatewayClient {
       );
 
       _setState(ConnectionState.authenticating);
-      _reconnectAttempt = 0;
       _missedPongs = 0;
+
+      // On reconnection, replay the connect handshake before starting
+      // heartbeat. Without this the gateway rejects all frames with
+      // "invalid handshake: first request must be connect".
+      if (_cachedClientId != null && _cachedDeviceId != null) {
+        await sendConnect(
+          clientId: _cachedClientId!,
+          deviceId: _cachedDeviceId!,
+        );
+      }
+
+      _reconnectAttempt = 0;
       _startHeartbeat();
     } catch (e) {
-      _setState(ConnectionState.disconnected);
-      _scheduleReconnect();
+      if (_state != ConnectionState.reconnecting) {
+        _setState(ConnectionState.disconnected);
+        _scheduleReconnect();
+      }
       rethrow;
     }
   }
@@ -154,6 +171,9 @@ class GatewayClient {
     required String clientId,
     required String deviceId,
   }) {
+    _cachedClientId = clientId;
+    _cachedDeviceId = deviceId;
+
     return send(
       GatewayRequest(
         method: 'connect',
