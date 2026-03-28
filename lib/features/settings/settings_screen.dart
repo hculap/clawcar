@@ -58,7 +58,7 @@ class SettingsScreen extends ConsumerWidget {
           ListTile(
             leading: const Icon(Icons.code),
             title: const Text('Source code'),
-            subtitle: const Text('github.com/szymonpaluch/clawcar'),
+            subtitle: const Text('github.com/hculap/clawcar'),
             onTap: () {
               // TODO: Open URL
             },

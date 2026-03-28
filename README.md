@@ -52,7 +52,7 @@ No STT/TTS processing happens on the device. OpenClaw handles the full voice pip
 
 ```bash
 # Clone the repo
-git clone https://github.com/szymonpaluch/clawcar.git
+git clone https://github.com/hculap/clawcar.git
 cd clawcar
 
 # Install dependencies
@@ -139,7 +139,7 @@ ClawCar uses the [OpenClaw Gateway Protocol v3](https://docs.openclaw.ai/gateway
 
 ## Roadmap
 
-See the [GitHub Project](https://github.com/users/szymonpaluch/projects) for detailed tracking.
+See the [GitHub Project](https://github.com/hculap/clawcar/projects) for detailed tracking.
 
 ### Phase 1: Core Voice Client
 - [ ] Gateway discovery (mDNS + manual)
