@@ -17,10 +17,4 @@ abstract class VoiceSession with _$VoiceSession {
       _$VoiceSessionFromJson(json);
 }
 
-enum VoiceSessionState {
-  idle,
-  listening,
-  processing,
-  speaking,
-  error,
-}
+enum VoiceSessionState { idle, listening, processing, speaking, error }

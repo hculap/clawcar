@@ -2,12 +2,7 @@ import 'dart:async';
 
 import 'package:vad/vad.dart';
 
-enum VadState {
-  idle,
-  listening,
-  speechDetected,
-  speechEnded,
-}
+enum VadState { idle, listening, speechDetected, speechEnded }
 
 class VadService {
   VadHandler? _handler;
@@ -20,20 +15,14 @@ class VadService {
   VadState get state => _state;
 
   Future<void> initialize() async {
-    _handler = VadHandler.create(
-      positiveSpeechThreshold: 0.8,
-      negativeSpeechThreshold: 0.35,
-      minSpeechFrames: 5,
-      redemptionFrames: 8,
-      preSpeechPadFrames: 3,
-    );
+    _handler = VadHandler.create();
 
     _handler!.onSpeechStart.listen((_) {
       _setState(VadState.speechDetected);
     });
 
-    _handler!.onSpeechEnd.listen((event) {
-      _speechController.add(event.rawAudio);
+    _handler!.onSpeechEnd.listen((audioData) {
+      _speechController.add(audioData);
       _setState(VadState.speechEnded);
     });
 
@@ -46,7 +35,13 @@ class VadService {
     if (_handler == null) {
       throw StateError('VAD not initialized');
     }
-    await _handler!.startListening();
+    await _handler!.startListening(
+      positiveSpeechThreshold: 0.8,
+      negativeSpeechThreshold: 0.35,
+      minSpeechFrames: 5,
+      redemptionFrames: 8,
+      preSpeechPadFrames: 3,
+    );
     _setState(VadState.listening);
   }
 

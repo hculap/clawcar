@@ -13,7 +13,7 @@ dependencies:
 
   # State management
   flutter_riverpod: ^3.3.1
-  riverpod_annotation: ^3.3.1
+  riverpod_annotation: ^4.0.2
 
   # Networking
   web_socket_channel: ^3.0.3
@@ -46,7 +46,7 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
   build_runner: ^2.4.0
-  riverpod_generator: ^3.3.1
+  riverpod_generator: ^4.0.3
   freezed: ^3.0.0
   json_serializable: ^6.9.0
   mockito: ^5.4.0

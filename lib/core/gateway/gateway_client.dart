@@ -22,8 +22,7 @@ class GatewayClient {
   WebSocketChannel? _channel;
   final _pendingRequests = <String, Completer<GatewayResponse>>{};
   final _eventController = StreamController<GatewayEvent>.broadcast();
-  final _stateController =
-      StreamController<ConnectionState>.broadcast();
+  final _stateController = StreamController<ConnectionState>.broadcast();
 
   ConnectionState _state = ConnectionState.disconnected;
   int _reconnectAttempt = 0;
@@ -50,11 +49,7 @@ class GatewayClient {
       _channel = WebSocketChannel.connect(uri);
       await _channel!.ready;
 
-      _channel!.stream.listen(
-        _onMessage,
-        onError: _onError,
-        onDone: _onDone,
-      );
+      _channel!.stream.listen(_onMessage, onError: _onError, onDone: _onDone);
 
       _setState(ConnectionState.authenticating);
       _reconnectAttempt = 0;
@@ -88,34 +83,38 @@ class GatewayClient {
     required String clientId,
     required String deviceId,
   }) {
-    return send(GatewayRequest(
-      method: 'connect',
-      params: {
-        'minProtocol': gatewayProtocolVersion,
-        'maxProtocol': gatewayProtocolVersion,
-        'client': {
-          'id': clientId,
-          'version': '0.1.0',
-          'platform': 'mobile',
-          'mode': 'operator',
+    return send(
+      GatewayRequest(
+        method: 'connect',
+        params: {
+          'minProtocol': gatewayProtocolVersion,
+          'maxProtocol': gatewayProtocolVersion,
+          'client': {
+            'id': clientId,
+            'version': '0.1.0',
+            'platform': 'mobile',
+            'mode': 'operator',
+          },
+          'role': 'operator',
+          'scopes': ['operator.read', 'operator.write'],
+          if (authToken != null) 'auth': {'token': authToken},
+          'device': {'id': deviceId},
         },
-        'role': 'operator',
-        'scopes': ['operator.read', 'operator.write'],
-        if (authToken != null) 'auth': {'token': authToken},
-        'device': {'id': deviceId},
-      },
-    ));
+      ),
+    );
   }
 
   Future<void> sendAudio(List<int> audioData) {
-    return send(GatewayRequest(
-      method: 'voice.send',
-      params: {
-        'audio': base64Encode(audioData),
-        'format': 'pcm16',
-        'sampleRate': 16000,
-      },
-    )).then((_) {});
+    return send(
+      GatewayRequest(
+        method: 'voice.send',
+        params: {
+          'audio': base64Encode(audioData),
+          'format': 'pcm16',
+          'sampleRate': 16000,
+        },
+      ),
+    ).then((_) {});
   }
 
   Future<void> disconnect() async {
@@ -175,14 +174,13 @@ class GatewayClient {
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) {
-        if (_channel != null) {
-          send(GatewayRequest(method: 'ping')).catchError((_) {});
-        }
-      },
-    );
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_channel != null) {
+        send(
+          GatewayRequest(method: 'ping'),
+        ).catchError((_) => const GatewayResponse(id: '', ok: false));
+      }
+    });
   }
 
   void _scheduleReconnect() {

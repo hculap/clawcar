@@ -104,8 +104,8 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
             Text(
               _statusText,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 8),
             if (_sessionState == VoiceSessionState.processing)

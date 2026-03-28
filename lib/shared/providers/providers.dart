@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/audio/audio_player_service.dart';
@@ -23,8 +24,7 @@ final gatewayDiscoveryProvider = Provider<GatewayDiscovery>((ref) {
   return discovery;
 });
 
-final selectedGatewayProvider =
-    StateProvider<GatewayConfig?>((ref) => null);
+final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) => null);
 
 final gatewayClientProvider = Provider<GatewayClient?>((ref) {
   final gateway = ref.watch(selectedGatewayProvider);

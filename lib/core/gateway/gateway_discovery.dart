@@ -1,6 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
 
-import 'package:nsd/nsd.dart';
+import 'package:nsd/nsd.dart' as nsd;
 
 import '../../shared/models/gateway_config.dart';
 import 'gateway_protocol.dart';
@@ -8,16 +9,19 @@ import 'gateway_protocol.dart';
 const _serviceType = '_openclaw-gw._tcp';
 
 class GatewayDiscovery {
-  Discovery? _discovery;
-  final _gatewaysController =
-      StreamController<List<GatewayConfig>>.broadcast();
+  nsd.Discovery? _discovery;
+  final _gatewaysController = StreamController<List<GatewayConfig>>.broadcast();
   final _gateways = <String, GatewayConfig>{};
 
   Stream<List<GatewayConfig>> get gateways => _gatewaysController.stream;
   List<GatewayConfig> get currentGateways => _gateways.values.toList();
 
   Future<void> startDiscovery() async {
-    _discovery = await startNsdDiscovery(_serviceType);
+    _discovery = await nsd.startDiscovery(
+      _serviceType,
+      autoResolve: true,
+      ipLookupType: nsd.IpLookupType.any,
+    );
 
     _discovery!.addServiceListener((service, status) {
       final host = service.host;
@@ -29,7 +33,7 @@ class GatewayDiscovery {
       final key = '$host:$port';
 
       switch (status) {
-        case ServiceStatus.found:
+        case nsd.ServiceStatus.found:
           final config = GatewayConfig(
             host: host,
             port: port,
@@ -41,7 +45,7 @@ class GatewayDiscovery {
           _gateways[key] = config;
           _gatewaysController.add(_gateways.values.toList());
 
-        case ServiceStatus.lost:
+        case nsd.ServiceStatus.lost:
           _gateways.remove(key);
           _gatewaysController.add(_gateways.values.toList());
       }
@@ -49,8 +53,10 @@ class GatewayDiscovery {
   }
 
   Future<void> stopDiscovery() async {
-    await _discovery?.cancel();
-    _discovery = null;
+    if (_discovery != null) {
+      await nsd.stopDiscovery(_discovery!);
+      _discovery = null;
+    }
   }
 
   void dispose() {

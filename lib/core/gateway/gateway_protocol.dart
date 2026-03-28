@@ -28,11 +28,8 @@ class GatewayRequest extends GatewayFrame {
   final String method;
   final Map<String, dynamic> params;
 
-  GatewayRequest({
-    String? id,
-    required this.method,
-    this.params = const {},
-  }) : id = id ?? _uuid.v4();
+  GatewayRequest({String? id, required this.method, this.params = const {}})
+    : id = id ?? _uuid.v4();
 
   factory GatewayRequest.fromMap(Map<String, dynamic> map) {
     return GatewayRequest(
@@ -42,12 +39,8 @@ class GatewayRequest extends GatewayFrame {
     );
   }
 
-  String toJson() => jsonEncode({
-        'type': 'req',
-        'id': id,
-        'method': method,
-        'params': params,
-      });
+  String toJson() =>
+      jsonEncode({'type': 'req', 'id': id, 'method': method, 'params': params});
 }
 
 class GatewayResponse extends GatewayFrame {

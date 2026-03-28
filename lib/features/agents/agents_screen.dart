@@ -59,11 +59,9 @@ class _AgentsScreenState extends ConsumerState<AgentsScreen> {
   }
 
   void _selectAgent(Agent agent) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => VoiceChatScreen(agent: agent),
-      ),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => VoiceChatScreen(agent: agent)));
   }
 
   @override
@@ -96,7 +94,10 @@ class _AgentsScreenState extends ConsumerState<AgentsScreen> {
           children: [
             const Icon(Icons.error_outline, size: 48),
             const SizedBox(height: 16),
-            Text('Connection failed', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Connection failed',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             Text(_error!, style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 16),
@@ -113,15 +114,17 @@ class _AgentsScreenState extends ConsumerState<AgentsScreen> {
         final agent = _agents[index];
         return Card(
           child: ListTile(
-            leading: CircleAvatar(
-              child: Text(agent.name[0].toUpperCase()),
-            ),
+            leading: CircleAvatar(child: Text(agent.name[0].toUpperCase())),
             title: Text(agent.name),
-            subtitle: agent.description != null ? Text(agent.description!) : null,
+            subtitle: agent.description != null
+                ? Text(agent.description!)
+                : null,
             trailing: agent.isDefault
                 ? Chip(
                     label: const Text('Default'),
-                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primaryContainer,
                   )
                 : null,
             onTap: () => _selectAgent(agent),

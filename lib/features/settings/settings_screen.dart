@@ -21,7 +21,9 @@ class SettingsScreen extends ConsumerWidget {
             leading: const Icon(Icons.router),
             title: const Text('Connected gateway'),
             subtitle: gateway != null
-                ? Text('${gateway.displayName} (${gateway.host}:${gateway.port})')
+                ? Text(
+                    '${gateway.displayName} (${gateway.host}:${gateway.port})',
+                  )
                 : const Text('Not connected'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
@@ -37,7 +39,9 @@ class SettingsScreen extends ConsumerWidget {
           const _SectionHeader(title: 'Voice'),
           const SwitchListTile(
             title: Text('Auto-listen after response'),
-            subtitle: Text('Automatically start listening after agent responds'),
+            subtitle: Text(
+              'Automatically start listening after agent responds',
+            ),
             value: true, // TODO: Connect to settings provider
             onChanged: null, // TODO: Implement
           ),
@@ -80,8 +84,8 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+        ),
       ),
     );
   }

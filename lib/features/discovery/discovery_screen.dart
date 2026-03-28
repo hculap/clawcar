@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../shared/models/gateway_config.dart';
 import '../../shared/providers/providers.dart';
 import '../../core/gateway/gateway_discovery.dart';
-import '../../core/gateway/gateway_protocol.dart';
 import '../agents/agents_screen.dart';
 
 class DiscoveryScreen extends ConsumerStatefulWidget {
@@ -44,9 +43,9 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
 
   void _connectToGateway(GatewayConfig config) {
     ref.read(selectedGatewayProvider.notifier).state = config;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const AgentsScreen()),
-    );
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => const AgentsScreen()));
   }
 
   void _connectManually() {
@@ -88,8 +87,8 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
               Text(
                 'Voice-first client for OpenClaw',
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 48),
@@ -132,10 +131,11 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
                     ? Center(
                         child: Text(
                           'Scanning for OpenClaw gateways...',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                         ),
                       )
