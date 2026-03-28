@@ -15,6 +15,7 @@ import '../../core/config/app_config.dart';
 import '../../core/gateway/gateway_client.dart';
 import '../../core/gateway/gateway_discovery.dart';
 import '../../shared/models/auth_models.dart';
+import '../../shared/models/agent.dart';
 import '../../shared/models/gateway_config.dart';
 import '../../shared/models/vad_event.dart';
 
@@ -109,4 +110,31 @@ final authServiceProvider = Provider<AuthService>((ref) {
 
 final pairingStateProvider = StreamProvider<PairingState>((ref) {
   return ref.watch(authServiceProvider).pairingStateChanges;
+});
+
+// -- Agent providers --
+
+final selectedAgentProvider = StateProvider<Agent?>((ref) => null);
+
+final agentsProvider = FutureProvider<List<Agent>>((ref) async {
+  final client = ref.watch(gatewayClientProvider);
+  if (client == null) {
+    throw StateError('Not connected to gateway');
+  }
+
+  if (client.state != ConnectionState.connected) {
+    await client.connect();
+    final state = await client.stateChanges
+        .firstWhere(
+          (s) =>
+              s == ConnectionState.connected ||
+              s == ConnectionState.disconnected,
+        )
+        .timeout(const Duration(seconds: 15));
+    if (state != ConnectionState.connected) {
+      throw StateError('Failed to connect to gateway');
+    }
+  }
+
+  return client.listAgents();
 });
