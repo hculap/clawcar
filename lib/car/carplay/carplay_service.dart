@@ -38,6 +38,13 @@ class CarPlayService {
   Future<void> updateStatusText(String text) async {
     await _methodChannel.invokeMethod('updateStatusText', {'text': text});
   }
+
+  Future<void> updateContinuousMode(bool enabled) async {
+    await _methodChannel.invokeMethod(
+      'updateContinuousMode',
+      {'enabled': enabled},
+    );
+  }
 }
 
 class CarPlayEvent {

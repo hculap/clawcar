@@ -37,20 +37,7 @@ class SettingsScreen extends ConsumerWidget {
 
           // Voice section
           const _SectionHeader(title: 'Voice'),
-          const SwitchListTile(
-            title: Text('Auto-listen after response'),
-            subtitle: Text(
-              'Automatically start listening after agent responds',
-            ),
-            value: true, // TODO: Connect to settings provider
-            onChanged: null, // TODO: Implement
-          ),
-          const SwitchListTile(
-            title: Text('Continuous conversation'),
-            subtitle: Text('Keep listening until manually stopped'),
-            value: false,
-            onChanged: null,
-          ),
+          _ContinuousConversationTile(),
 
           // About section
           const _SectionHeader(title: 'About'),
@@ -69,6 +56,24 @@ class SettingsScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ContinuousConversationTile extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(continuousConversationProvider);
+    return SwitchListTile(
+      title: const Text('Continuous conversation'),
+      subtitle: const Text(
+        'Auto-listen after response until manually stopped',
+      ),
+      value: enabled,
+      onChanged: (value) {
+        ref.read(continuousConversationProvider.notifier).state = value;
+        ref.read(appConfigProvider).setContinuousConversation(value);
+      },
     );
   }
 }

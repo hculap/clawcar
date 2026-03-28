@@ -74,6 +74,43 @@ void main() {
       expect(restored.displayName, 'Persistent GW');
     });
 
+  });
+
+  group('AppConfig continuous conversation', () {
+    late AppConfig config;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      config = AppConfig(prefs);
+    });
+
+    test('defaults to false when nothing saved', () {
+      expect(config.continuousConversation, false);
+    });
+
+    test('persists and retrieves enabled state', () async {
+      await config.setContinuousConversation(true);
+      expect(config.continuousConversation, true);
+    });
+
+    test('persists and retrieves disabled state', () async {
+      await config.setContinuousConversation(true);
+      await config.setContinuousConversation(false);
+      expect(config.continuousConversation, false);
+    });
+
+    test('survives SharedPreferences reload', () async {
+      await config.setContinuousConversation(true);
+
+      final prefs = await SharedPreferences.getInstance();
+      final freshConfig = AppConfig(prefs);
+
+      expect(freshConfig.continuousConversation, true);
+    });
+  });
+
+  group('AppConfig malformed data', () {
     test('handles malformed JSON gracefully', () async {
       SharedPreferences.setMockInitialValues({
         'selected_gateway': '{invalid json}',

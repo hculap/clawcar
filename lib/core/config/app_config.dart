@@ -8,6 +8,7 @@ import '../../shared/models/gateway_config.dart';
 const _keySelectedGateway = 'selected_gateway';
 const _keySelectedAgent = 'selected_agent';
 const _keyDeviceId = 'device_id';
+const _keyContinuousConversation = 'continuous_conversation';
 
 class AppConfig {
   final SharedPreferences _prefs;
@@ -46,5 +47,12 @@ class AppConfig {
 
   Future<void> setDeviceId(String id) async {
     await _prefs.setString(_keyDeviceId, id);
+  }
+
+  bool get continuousConversation =>
+      _prefs.getBool(_keyContinuousConversation) ?? false;
+
+  Future<void> setContinuousConversation(bool enabled) async {
+    await _prefs.setBool(_keyContinuousConversation, enabled);
   }
 }
