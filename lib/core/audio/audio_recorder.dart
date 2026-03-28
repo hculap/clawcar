@@ -13,11 +13,20 @@ const audioRecordConfig = RecordConfig(
   noiseSuppress: true,
 );
 
+/// Interface for audio recording services used by the voice pipeline.
+abstract class AudioRecorderBase {
+  Stream<Uint8List> get audioStream;
+  bool get isRecording;
+  Future<void> startRecording();
+  Future<void> stopRecording();
+  Future<void> dispose();
+}
+
 /// Cross-platform audio recording service that streams PCM16 chunks.
 ///
 /// Streams raw PCM16 audio at 16kHz mono via [audioStream].
 /// Handles microphone permissions, subscription lifecycle, and error recovery.
-class AudioRecorderService {
+class AudioRecorderService implements AudioRecorderBase {
   AudioRecorderService({AudioRecorder? recorder})
       : _recorder = recorder ?? AudioRecorder();
 

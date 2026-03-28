@@ -3,31 +3,27 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:clawcar/core/audio/audio_recorder.dart' show AudioRecorderBase;
 import 'package:clawcar/core/audio/voice_pipeline.dart';
 import 'package:clawcar/core/gateway/gateway_client.dart';
 import 'package:clawcar/core/gateway/gateway_protocol.dart';
 import 'package:clawcar/core/audio/audio_player_service.dart';
 import 'package:clawcar/core/audio/vad_service.dart';
-import 'package:clawcar/core/audio/vad_service_base.dart';
 import 'package:clawcar/shared/models/vad_event.dart';
 
 // --- Fakes ---
 
-class FakeVadService implements VadServiceBase {
+class FakeVadService extends VadService {
   final _eventController = StreamController<VadEvent>.broadcast();
   final _stateController = StreamController<VadState>.broadcast();
   bool initialized = false;
   bool listening = false;
-  VadState _state = VadState.idle;
 
   @override
   Stream<VadEvent> get events => _eventController.stream;
 
   @override
   Stream<VadState> get stateChanges => _stateController.stream;
-
-  @override
-  VadState get state => _state;
 
   @override
   Future<void> initialize() async {
@@ -37,14 +33,12 @@ class FakeVadService implements VadServiceBase {
   @override
   Future<void> startListening({Stream<Uint8List>? audioStream}) async {
     listening = true;
-    _state = VadState.listening;
     _stateController.add(VadState.listening);
   }
 
   @override
   Future<void> stopListening() async {
     listening = false;
-    _state = VadState.idle;
     _stateController.add(VadState.idle);
   }
 
@@ -129,22 +123,55 @@ class FakeAudioPlayerService implements AudioPlayerBase {
   }
 }
 
+class FakeAudioRecorderService implements AudioRecorderBase {
+  final _audioController = StreamController<Uint8List>.broadcast();
+  bool _recording = false;
+
+  @override
+  Stream<Uint8List> get audioStream => _audioController.stream;
+
+  @override
+  bool get isRecording => _recording;
+
+  @override
+  Future<void> startRecording() async {
+    _recording = true;
+  }
+
+  @override
+  Future<void> stopRecording() async {
+    _recording = false;
+  }
+
+  void emitAudioChunk(Uint8List chunk) {
+    _audioController.add(chunk);
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _audioController.close();
+  }
+}
+
 // --- Tests ---
 
 void main() {
   late FakeVadService vad;
   late FakeGatewayClient gateway;
   late FakeAudioPlayerService player;
+  late FakeAudioRecorderService recorder;
   late VoicePipeline pipeline;
 
   setUp(() {
     vad = FakeVadService();
     gateway = FakeGatewayClient();
     player = FakeAudioPlayerService();
+    recorder = FakeAudioRecorderService();
     pipeline = VoicePipeline(
       gateway: gateway,
       vad: vad,
       player: player,
+      recorder: recorder,
     );
   });
 
@@ -153,6 +180,7 @@ void main() {
     vad.dispose();
     gateway.dispose();
     player.dispose();
+    recorder.dispose();
   });
 
   group('VoicePipeline', () {
@@ -233,6 +261,41 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(states, contains(PipelineState.processing));
+      });
+
+      test('sends buffered audio to gateway on manual stop', () async {
+        await pipeline.initialize();
+        await pipeline.startListening();
+
+        final chunk1 = Uint8List.fromList([1, 0, 2, 0]);
+        final chunk2 = Uint8List.fromList([3, 0, 4, 0]);
+        recorder.emitAudioChunk(chunk1);
+        recorder.emitAudioChunk(chunk2);
+        await Future<void>.delayed(Duration.zero);
+
+        final states = <PipelineState>[];
+        pipeline.stateChanges.listen(states.add);
+
+        await pipeline.stopListening();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(gateway.lastSentAudio, isNotNull);
+        expect(gateway.lastSentAudio, [1, 0, 2, 0, 3, 0, 4, 0]);
+        expect(states, contains(PipelineState.processing));
+      });
+
+      test('transitions to idle on manual stop with no audio', () async {
+        await pipeline.initialize();
+        await pipeline.startListening();
+
+        final states = <PipelineState>[];
+        pipeline.stateChanges.listen(states.add);
+
+        await pipeline.stopListening();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(gateway.lastSentAudio, isNull);
+        expect(pipeline.state, PipelineState.idle);
       });
 
       test('emits error and recovers on send failure', () async {
