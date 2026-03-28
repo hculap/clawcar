@@ -7,6 +7,7 @@ import androidx.car.app.model.CarIcon
 import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Template
 import androidx.core.graphics.drawable.IconCompat
+import com.clawcar.clawcar.R
 
 /// Main voice interaction screen for Android Auto.
 ///
@@ -29,7 +30,7 @@ class VoiceScreen(carContext: CarContext) : Screen(carContext) {
 
         val micIcon = IconCompat.createWithResource(
             carContext,
-            android.R.drawable.ic_btn_speak_now
+            R.drawable.ic_mic_car
         )
 
         val micAction = Action.Builder()
