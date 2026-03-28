@@ -24,6 +24,13 @@ final gatewayDiscoveryProvider = Provider<GatewayDiscovery>((ref) {
   return discovery;
 });
 
+final discoveredGatewaysProvider = StreamProvider<List<GatewayConfig>>((ref) {
+  final discovery = ref.watch(gatewayDiscoveryProvider);
+  discovery.startDiscovery().ignore();
+  ref.onDispose(() => discovery.stopDiscovery());
+  return discovery.gateways;
+});
+
 final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) => null);
 
 final gatewayClientProvider = Provider<GatewayClient?>((ref) {
