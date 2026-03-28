@@ -29,15 +29,37 @@ void main() {
       expect(end.speechDuration, duration);
     });
 
-    test('supports pattern matching', () {
-      final event = VadEvent.speechStart(timestamp: DateTime.now());
+    test('error carries timestamp and message', () {
+      final now = DateTime.now();
+      final event = VadEvent.error(
+        timestamp: now,
+        message: 'Microphone permission denied',
+      );
 
-      final result = switch (event) {
+      expect(event, isA<VadError>());
+      final err = event as VadError;
+      expect(err.message, 'Microphone permission denied');
+      expect(err.timestamp, now);
+    });
+
+    test('supports exhaustive pattern matching', () {
+      final events = <VadEvent>[
+        VadEvent.speechStart(timestamp: DateTime.now()),
+        VadEvent.speechEnd(
+          timestamp: DateTime.now(),
+          audioData: [0.5],
+          speechDuration: const Duration(seconds: 1),
+        ),
+        VadEvent.error(timestamp: DateTime.now(), message: 'fail'),
+      ];
+
+      final results = events.map((event) => switch (event) {
         VadSpeechStart() => 'started',
         VadSpeechEnd() => 'ended',
-      };
+        VadError() => 'error',
+      }).toList();
 
-      expect(result, 'started');
+      expect(results, ['started', 'ended', 'error']);
     });
 
     test('supports equality via Freezed', () {
