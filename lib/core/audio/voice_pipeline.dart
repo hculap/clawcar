@@ -44,6 +44,7 @@ class VoicePipeline {
         _player = player;
 
   PipelineState get state => _state;
+  bool continuousMode = false;
   Stream<PipelineState> get stateChanges => _stateController.stream;
   Stream<VoicePipelineError> get errors => _errorController.stream;
 
@@ -76,6 +77,7 @@ class VoicePipeline {
   }
 
   Future<void> cancel() async {
+    continuousMode = false;
     await _player.stop();
     await stopListening();
     _setState(PipelineState.idle);
@@ -88,7 +90,7 @@ class VoicePipeline {
   void _listenToPlayerState() {
     _playerSub = _player.playerState.listen((playerState) {
       if (_state == PipelineState.speaking && !_player.isPlaying) {
-        _setState(PipelineState.idle);
+        _onPlaybackComplete();
       }
     });
   }
@@ -158,7 +160,7 @@ class VoicePipeline {
     try {
       await _player.playAudioBytes(audioBytes, mimeType: mimeType);
       if (!_disposed) {
-        _setState(PipelineState.idle);
+        await _onPlaybackComplete();
       }
     } catch (e) {
       _emitError(
@@ -174,6 +176,29 @@ class VoicePipeline {
         _setState(PipelineState.idle);
       }
     }
+  }
+
+  Future<void> _onPlaybackComplete() async {
+    if (_disposed) return;
+
+    if (continuousMode) {
+      try {
+        await startListening();
+      } catch (e) {
+        _emitError(
+          VoicePipelineError(
+            code: 'continuous_restart_failed',
+            message: 'Failed to restart listening: $e',
+            retryable: true,
+          ),
+        );
+        continuousMode = false;
+        _setState(PipelineState.idle);
+      }
+      return;
+    }
+
+    _setState(PipelineState.idle);
   }
 
   void _handleVoiceError(Map<String, dynamic> payload) {

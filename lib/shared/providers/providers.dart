@@ -142,6 +142,12 @@ final agentsProvider = FutureProvider<List<Agent>>((ref) async {
   return client.listAgents();
 });
 
+// -- Continuous conversation --
+
+final continuousConversationProvider = StateProvider<bool>((ref) {
+  return ref.read(appConfigProvider).continuousConversation;
+});
+
 // -- Voice pipeline providers --
 
 final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agentId) {
@@ -150,12 +156,13 @@ final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agen
 
   final vad = ref.watch(vadProvider);
   final player = ref.watch(audioPlayerProvider);
+  final continuous = ref.watch(continuousConversationProvider);
 
   final pipeline = VoicePipeline(
     gateway: client,
     vad: vad,
     player: player,
-  );
+  )..continuousMode = continuous;
   ref.onDispose(pipeline.dispose);
   return pipeline;
 });

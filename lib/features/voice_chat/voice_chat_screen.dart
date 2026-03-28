@@ -6,8 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/audio/voice_pipeline.dart';
 import '../../shared/models/agent.dart';
 import '../../shared/providers/providers.dart';
-import 'widgets/audio_wave.dart';
-import 'widgets/mic_button.dart';
 
 class VoiceChatScreen extends ConsumerStatefulWidget {
   final Agent agent;
@@ -104,11 +102,17 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
     });
   }
 
+  bool get _isContinuous => ref.read(continuousConversationProvider);
+
   String _statusTextFor(PipelineState state) {
+    final continuous = _isContinuous;
     return switch (state) {
       PipelineState.idle => 'Tap to speak',
+      PipelineState.listening when continuous => 'Listening (continuous)',
       PipelineState.listening => 'Listening...',
+      PipelineState.processing when continuous => 'Processing (continuous)',
       PipelineState.processing => 'Processing...',
+      PipelineState.speaking when continuous => 'Speaking (continuous)',
       PipelineState.speaking => 'Speaking...',
       PipelineState.error => 'Something went wrong',
     };
@@ -139,109 +143,138 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
     }
   }
 
+  Future<void> _onStopContinuous() async {
+    final pipeline = _currentPipeline;
+    if (pipeline == null) return;
+    await pipeline.cancel();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
+    final continuous = ref.watch(continuousConversationProvider);
+    final color = _colorFor(_pipelineState, context);
+    final isActive = _pipelineState == PipelineState.listening;
+    final isRunning = _pipelineState != PipelineState.idle &&
+        _pipelineState != PipelineState.error;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
         title: Text(widget.agent.name),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        foregroundColor: Colors.white70,
-      ),
-      extendBodyBehindAppBar: true,
-      body: SafeArea(
-        child: isLandscape
-            ? _buildLandscapeLayout(context)
-            : _buildPortraitLayout(context),
-      ),
-    );
-  }
-
-  Widget _buildPortraitLayout(BuildContext context) {
-    return Column(
-      children: [
-        const Spacer(flex: 2),
-        _buildMicSection(context),
-        const SizedBox(height: 40),
-        _buildStatusSection(context),
-        const Spacer(flex: 3),
-      ],
-    );
-  }
-
-  Widget _buildLandscapeLayout(BuildContext context) {
-    return Row(
-      children: [
-        const Spacer(),
-        _buildMicSection(context),
-        const SizedBox(width: 48),
-        Expanded(
-          flex: 2,
-          child: Center(child: _buildStatusSection(context)),
-        ),
-        const Spacer(),
-      ],
-    );
-  }
-
-  Widget _buildMicSection(BuildContext context) {
-    final color = MicButton.colorFor(_pipelineState, context);
-    final isSpeaking = _pipelineState == PipelineState.speaking;
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        MicButton(
-          state: _pipelineState,
-          onPressed: _onMicPressed,
-        ),
-        const SizedBox(height: 16),
-        AnimatedOpacity(
-          opacity: isSpeaking ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 300),
-          child: AudioWave(color: color, width: 160, height: 40),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatusSection(BuildContext context) {
-    final color = MicButton.colorFor(_pipelineState, context);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 200),
-          child: Text(
-            _statusText,
-            key: ValueKey(_statusText),
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  color: color.withValues(alpha: 0.9),
-                  fontWeight: FontWeight.w300,
-                  letterSpacing: 1.2,
-                ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-        if (_errorMessage != null) ...[
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Text(
-              _errorMessage!,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-              textAlign: TextAlign.center,
+        actions: [
+          IconButton(
+            icon: Icon(
+              continuous ? Icons.repeat_on : Icons.repeat,
+              color: continuous
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
             ),
+            tooltip: continuous
+                ? 'Continuous mode on'
+                : 'Continuous mode off',
+            onPressed: () {
+              final next = !continuous;
+              ref.read(continuousConversationProvider.notifier).state = next;
+              ref.read(appConfigProvider).setContinuousConversation(next);
+              _currentPipeline?.continuousMode = next;
+            },
           ),
         ],
-      ],
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (continuous && isRunning)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Chip(
+                  avatar: Icon(
+                    Icons.repeat,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  label: const Text('Continuous'),
+                  backgroundColor: Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withValues(alpha: 0.6),
+                ),
+              ),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              width: isActive ? 200 : 160,
+              height: isActive ? 200 : 160,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: color.withValues(alpha: 0.15),
+                border: Border.all(color: color, width: 3),
+              ),
+              child: IconButton(
+                iconSize: 64,
+                icon: Icon(_iconFor(_pipelineState), color: color),
+                onPressed: _onMicPressed,
+              ),
+            ),
+            const SizedBox(height: 32),
+            Text(
+              _statusText,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (_pipelineState == PipelineState.processing)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 64),
+                child: LinearProgressIndicator(),
+              ),
+            if (continuous && isRunning) ...[
+              const SizedBox(height: 24),
+              FilledButton.tonalIcon(
+                onPressed: _onStopContinuous,
+                icon: const Icon(Icons.stop),
+                label: const Text('Stop conversation'),
+              ),
+            ],
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  _errorMessage!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
+  }
+
+  Color _colorFor(PipelineState state, BuildContext context) {
+    return switch (state) {
+      PipelineState.idle => Theme.of(context).colorScheme.primary,
+      PipelineState.listening => Colors.red,
+      PipelineState.processing => Colors.orange,
+      PipelineState.speaking => Colors.green,
+      PipelineState.error => Colors.grey,
+    };
+  }
+
+  IconData _iconFor(PipelineState state) {
+    return switch (state) {
+      PipelineState.idle => Icons.mic_none,
+      PipelineState.listening => Icons.mic,
+      PipelineState.processing => Icons.hourglass_top,
+      PipelineState.speaking => Icons.volume_up,
+      PipelineState.error => Icons.mic_off,
+    };
   }
 }
