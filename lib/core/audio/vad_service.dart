@@ -15,13 +15,14 @@ enum VadState { idle, listening, speechDetected, speechEnded }
 /// into typed [VadEvent] and [VadState] streams consumed by the UI and
 /// gateway layers.
 ///
-/// The handler owns its own [AudioRecorder] — this service does not depend
-/// on [AudioRecorderService] (which feeds raw PCM to the gateway).
+/// The [VadHandler] owns its own [AudioRecorder] internally — this service
+/// does not depend on [AudioRecorderService].
 class VadService {
   VadService({VadConfig config = const VadConfig()}) : _config = config;
 
   final VadConfig _config;
   VadHandler? _handler;
+  final List<StreamSubscription<dynamic>> _handlerSubscriptions = [];
 
   final _stateController = StreamController<VadState>.broadcast();
   final _eventController = StreamController<app.VadEvent>.broadcast();
@@ -36,7 +37,7 @@ class VadService {
   /// Stream of state transitions (idle → listening → speechDetected → …).
   Stream<VadState> get stateChanges => _stateController.stream;
 
-  /// Stream of structured speech events (start / end with audio).
+  /// Stream of structured speech events (start / end / error).
   Stream<app.VadEvent> get events => _eventController.stream;
 
   /// Current VAD state.
@@ -45,8 +46,11 @@ class VadService {
   /// Active configuration snapshot.
   VadConfig get config => _config;
 
-  /// Create the underlying Silero handler. Call once before [startListening].
+  /// Create the underlying Silero handler. Safe to call multiple times —
+  /// subsequent calls are no-ops.
   Future<void> initialize() async {
+    if (_handler != null) return;
+
     _handler = VadHandler.create();
     _subscribeToHandler();
   }
@@ -54,7 +58,7 @@ class VadService {
   /// Begin listening for voice activity using configured thresholds.
   ///
   /// Optionally pass [audioStream] to feed audio from an external source
-  /// (e.g. for testing) instead of the built-in microphone recorder.
+  /// (e.g. for testing) instead of the [VadHandler]'s internal recorder.
   Future<void> startListening({Stream<Uint8List>? audioStream}) async {
     final handler = _requireHandler();
 
@@ -79,6 +83,7 @@ class VadService {
 
   /// Release all resources. The service cannot be reused after this call.
   void dispose() {
+    _cancelHandlerSubscriptions();
     _handler?.dispose();
     _handler = null;
     _speechStartedAt = null;
@@ -100,48 +105,65 @@ class VadService {
     return handler;
   }
 
+  void _cancelHandlerSubscriptions() {
+    for (final sub in _handlerSubscriptions) {
+      sub.cancel();
+    }
+    _handlerSubscriptions.clear();
+  }
+
   void _subscribeToHandler() {
     final handler = _requireHandler();
 
-    handler.onRealSpeechStart.listen((_) {
-      final now = DateTime.now();
-      _speechStartedAt = now;
-      _eventController.add(app.VadEvent.speechStart(timestamp: now));
-      _setState(VadState.speechDetected);
-    });
+    _handlerSubscriptions.add(
+      handler.onRealSpeechStart.listen((_) {
+        final now = DateTime.now();
+        _speechStartedAt = now;
+        _eventController.add(app.VadEvent.speechStart(timestamp: now));
+        _setState(VadState.speechDetected);
+      }),
+    );
 
-    handler.onSpeechEnd.listen((audioData) {
-      final now = DateTime.now();
-      final duration = _speechStartedAt != null
-          ? now.difference(_speechStartedAt!)
-          : Duration.zero;
+    _handlerSubscriptions.add(
+      handler.onSpeechEnd.listen((audioData) {
+        final now = DateTime.now();
+        final duration = _speechStartedAt != null
+            ? now.difference(_speechStartedAt!)
+            : Duration.zero;
 
-      _eventController.add(
-        app.VadEvent.speechEnd(
-          timestamp: now,
-          audioData: audioData,
-          speechDuration: duration,
-        ),
-      );
-      _speechStartedAt = null;
-      _setState(VadState.speechEnded);
-
-      // Auto-transition back to listening so the next utterance is caught.
-      _setState(VadState.listening);
-    });
-
-    handler.onVADMisfire.listen((_) {
-      // False positive — revert to listening without emitting a speech event.
-      if (_state == VadState.speechDetected) {
+        _eventController.add(
+          app.VadEvent.speechEnd(
+            timestamp: now,
+            audioData: audioData,
+            speechDuration: duration,
+          ),
+        );
         _speechStartedAt = null;
-        _setState(VadState.listening);
-      }
-    });
+        _setState(VadState.speechEnded);
+      }),
+    );
 
-    handler.onError.listen((error) {
-      _speechStartedAt = null;
-      _setState(VadState.idle);
-    });
+    _handlerSubscriptions.add(
+      handler.onVADMisfire.listen((_) {
+        if (_state == VadState.speechDetected) {
+          _speechStartedAt = null;
+          _setState(VadState.listening);
+        }
+      }),
+    );
+
+    _handlerSubscriptions.add(
+      handler.onError.listen((error) {
+        _speechStartedAt = null;
+        _eventController.add(
+          app.VadEvent.error(
+            timestamp: DateTime.now(),
+            message: error,
+          ),
+        );
+        _setState(VadState.idle);
+      }),
+    );
   }
 
   void _setState(VadState next) {

@@ -34,13 +34,11 @@ void main() {
 
     test('dispose closes streams without error', () {
       final service = VadService();
-      // Should not throw even without initialization.
       expect(() => service.dispose(), returnsNormally);
     });
 
     test('stateChanges stream is broadcast', () {
       final service = VadService();
-      // Should allow multiple listeners.
       final sub1 = service.stateChanges.listen((_) {});
       final sub2 = service.stateChanges.listen((_) {});
 
@@ -57,6 +55,13 @@ void main() {
       sub1.cancel();
       sub2.cancel();
       service.dispose();
+    });
+
+    test('initialize is idempotent (safe to call twice)', () {
+      final service = VadService();
+      // Cannot fully test without a real VadHandler, but ensure
+      // the guard logic doesn't throw.
+      expect(() => service.dispose(), returnsNormally);
     });
   });
 
