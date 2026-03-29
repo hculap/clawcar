@@ -17,7 +17,7 @@ class _AgentsScreenState extends ConsumerState<AgentsScreen> {
   @override
   void initState() {
     super.initState();
-    _restoreLastAgent();
+    Future(() => _restoreLastAgent());
   }
 
   void _restoreLastAgent() {

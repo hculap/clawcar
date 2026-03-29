@@ -48,7 +48,10 @@ final discoveredGatewaysProvider = StreamProvider<List<GatewayConfig>>((ref) {
 });
 
 final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) {
-  return ref.read(appConfigProvider).selectedGateway;
+  final saved = ref.read(appConfigProvider).selectedGateway;
+  // Skip saved gateways without auth token — connection will fail
+  if (saved != null && saved.authToken == null) return null;
+  return saved;
 });
 
 final gatewayClientProvider = Provider<GatewayClient?>((ref) {

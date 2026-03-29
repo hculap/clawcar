@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../shared/models/gateway_config.dart';
 import '../../shared/providers/providers.dart';
 import '../../core/gateway/gateway_discovery.dart';
+import '../../core/gateway/gateway_protocol.dart';
 import '../agents/agents_screen.dart';
 
 class DiscoveryScreen extends ConsumerStatefulWidget {
@@ -17,6 +18,7 @@ class DiscoveryScreen extends ConsumerStatefulWidget {
 
 class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
   final _hostController = TextEditingController();
+  final _tokenController = TextEditingController();
   Timer? _timeoutTimer;
   bool _timedOut = false;
 
@@ -29,8 +31,13 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
   }
 
   void _connectToGateway(GatewayConfig config) {
-    ref.read(selectedGatewayProvider.notifier).state = config;
-    ref.read(appConfigProvider).setSelectedGateway(config);
+    final token = _tokenController.text.trim();
+    final configWithToken = token.isNotEmpty && config.authToken == null
+        ? config.copyWith(authToken: token)
+        : config;
+
+    ref.read(selectedGatewayProvider.notifier).state = configWithToken;
+    ref.read(appConfigProvider).setSelectedGateway(configWithToken);
     Navigator.of(
       context,
     ).pushReplacement(MaterialPageRoute(builder: (_) => const AgentsScreen()));
@@ -40,7 +47,13 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
     final host = _hostController.text.trim();
     if (host.isEmpty) return;
 
-    final config = GatewayDiscovery.manualConfig(host);
+    final token = _tokenController.text.trim();
+    final config = GatewayConfig(
+      host: host,
+      port: defaultGatewayPort,
+      displayName: host,
+      authToken: token.isNotEmpty ? token : null,
+    );
     _connectToGateway(config);
   }
 
@@ -56,6 +69,7 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
   @override
   void dispose() {
     _hostController.dispose();
+    _tokenController.dispose();
     _timeoutTimer?.cancel();
     super.dispose();
   }
@@ -94,9 +108,20 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
               // Manual entry
               TextField(
                 controller: _hostController,
-                decoration: InputDecoration(
+                decoration: const InputDecoration(
                   labelText: 'Gateway address',
                   hintText: 'e.g. 192.168.1.100 or myhost.local',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => _connectManually(),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _tokenController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Auth token',
+                  hintText: 'Gateway auth token',
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
                     icon: const Icon(Icons.arrow_forward),
