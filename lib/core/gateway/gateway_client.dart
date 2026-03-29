@@ -64,9 +64,8 @@ class GatewayClient {
   bool _disposed = false;
   Completer<void>? _connectCompleter;
 
-  // Cached handshake params for reconnection.
-  String? _cachedClientId;
-  String? _cachedDeviceId;
+  // Cached auth token for reconnection.
+  String? _cachedAuthToken;
 
   GatewayClient({
     required this.host,
@@ -119,13 +118,9 @@ class GatewayClient {
       // On reconnection, replay the connect handshake before starting
       // heartbeat. Without this the gateway rejects all frames with
       // "invalid handshake: first request must be connect".
-      if (_cachedClientId != null && _cachedDeviceId != null) {
-        await sendConnect(
-          clientId: _cachedClientId!,
-          deviceId: _cachedDeviceId!,
-        );
+      if (_cachedAuthToken != null) {
+        await sendConnect(authToken: _cachedAuthToken);
         _reconnectAttempt = 0;
-        _startHeartbeat();
       }
       // On first connect, heartbeat starts after sendConnect is called
       // by the provider (which triggers _setState → connected → heartbeat).
@@ -169,31 +164,33 @@ class GatewayClient {
   /// The gateway may respond with a `connect.challenge` event (handled
   /// internally) before returning the final [GatewayResponse].
   Future<GatewayResponse> sendConnect({
-    required String clientId,
-    required String deviceId,
-  }) {
-    _cachedClientId = clientId;
-    _cachedDeviceId = deviceId;
+    String? authToken,
+  }) async {
+    final token = authToken ?? this.authToken;
+    _cachedAuthToken = token;
 
-    return send(
+    final response = await send(
       GatewayRequest(
         method: 'connect',
         params: {
           'minProtocol': gatewayProtocolVersion,
           'maxProtocol': gatewayProtocolVersion,
           'client': {
-            'id': clientId,
+            'id': 'cli',
             'version': '0.1.0',
             'platform': 'mobile',
-            'mode': 'operator',
+            'mode': 'cli',
           },
           'role': 'operator',
           'scopes': ['operator.admin', 'operator.read', 'operator.write'],
-          if (authToken != null) 'auth': {'token': authToken},
-          'device': {'id': deviceId},
+          if (token != null) 'auth': {'token': token},
         },
       ),
     );
+    if (response.ok) {
+      _setState(ConnectionState.connected);
+    }
+    return response;
   }
 
   /// Sends raw audio data to the gateway for STT processing.
@@ -210,15 +207,20 @@ class GatewayClient {
     );
   }
 
-  /// Lists available agents from the gateway.
-  Future<List<Agent>> listAgents() async {
-    final response = await send(
-      GatewayRequest(method: 'agent.list', params: {}),
-    );
-    final agents = (response.payload?['agents'] as List<dynamic>?) ?? [];
-    return agents
-        .map((a) => Agent.fromJson(a as Map<String, dynamic>))
-        .toList();
+  /// Extracts agents from a connect response's snapshot.
+  static List<Agent> extractAgentsFromSnapshot(GatewayResponse response) {
+    final snapshot =
+        response.payload?['snapshot'] as Map<String, dynamic>? ?? {};
+    final health = snapshot['health'] as Map<String, dynamic>? ?? {};
+    final agents = (health['agents'] as List<dynamic>?) ?? [];
+    return agents.map((a) {
+      final map = a as Map<String, dynamic>;
+      return Agent(
+        id: map['agentId'] as String,
+        name: map['agentId'] as String,
+        isDefault: map['isDefault'] as bool? ?? false,
+      );
+    }).toList();
   }
 
   /// Gracefully disconnects from the gateway.

@@ -148,21 +148,18 @@ final agentsProvider = FutureProvider<List<Agent>>((ref) async {
     throw StateError('Not connected to gateway');
   }
 
-  if (client.state != ConnectionState.connected) {
+  // 1. Open WebSocket
+  if (client.state == ConnectionState.disconnected) {
     await client.connect();
-    final state = await client.stateChanges
-        .firstWhere(
-          (s) =>
-              s == ConnectionState.connected ||
-              s == ConnectionState.disconnected,
-        )
-        .timeout(const Duration(seconds: 15));
-    if (state != ConnectionState.connected) {
-      throw StateError('Failed to connect to gateway');
-    }
   }
 
-  return client.listAgents();
+  // 2. Send connect handshake with token auth
+  final response = await client.sendConnect(
+    authToken: client.authToken,
+  );
+
+  // 3. Extract agents from the connect response snapshot
+  return GatewayClient.extractAgentsFromSnapshot(response);
 });
 
 // -- Continuous conversation --
