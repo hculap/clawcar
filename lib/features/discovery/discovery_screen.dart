@@ -5,9 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../shared/models/gateway_config.dart';
 import '../../shared/providers/providers.dart';
-import '../../core/gateway/gateway_discovery.dart';
 import '../../core/gateway/gateway_protocol.dart';
 import '../agents/agents_screen.dart';
+import '../pairing/pairing_screen.dart';
 
 class DiscoveryScreen extends ConsumerStatefulWidget {
   const DiscoveryScreen({super.key});
@@ -21,6 +21,7 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
   final _tokenController = TextEditingController();
   Timer? _timeoutTimer;
   bool _timedOut = false;
+  bool _connecting = false;
 
   @override
   void initState() {
@@ -30,17 +31,45 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen> {
     });
   }
 
-  void _connectToGateway(GatewayConfig config) {
-    final token = _tokenController.text.trim();
-    final configWithToken = token.isNotEmpty && config.authToken == null
-        ? config.copyWith(authToken: token)
-        : config;
+  Future<void> _connectToGateway(GatewayConfig config) async {
+    if (_connecting) return;
+    setState(() => _connecting = true);
 
-    ref.read(selectedGatewayProvider.notifier).state = configWithToken;
-    ref.read(appConfigProvider).setSelectedGateway(configWithToken);
-    Navigator.of(
-      context,
-    ).pushReplacement(MaterialPageRoute(builder: (_) => const AgentsScreen()));
+    try {
+      final token = _tokenController.text.trim();
+      final configWithToken = token.isNotEmpty && config.authToken == null
+          ? config.copyWith(authToken: token)
+          : config;
+
+      ref.read(selectedGatewayProvider.notifier).state = configWithToken;
+      ref.read(appConfigProvider).setSelectedGateway(configWithToken);
+
+      // Check if device is already paired with this gateway
+      final paired = await ref
+          .read(authServiceProvider)
+          .hasCredentials(configWithToken.host);
+
+      if (!mounted) return;
+
+      if (paired) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const AgentsScreen()),
+        );
+      } else {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => PairingScreen(gateway: configWithToken),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _connecting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Connection failed: $e')),
+        );
+      }
+    }
   }
 
   void _connectManually() {

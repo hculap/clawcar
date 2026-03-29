@@ -21,6 +21,7 @@ import '../../core/auth/device_identity_service.dart';
 import '../../core/config/app_config.dart';
 import '../../core/gateway/gateway_client.dart';
 import '../../core/gateway/gateway_discovery.dart';
+import '../../core/gateway/gateway_protocol.dart';
 import '../../shared/models/auth_models.dart';
 import '../../shared/models/agent.dart';
 import '../../shared/models/gateway_config.dart';
@@ -48,10 +49,7 @@ final discoveredGatewaysProvider = StreamProvider<List<GatewayConfig>>((ref) {
 });
 
 final selectedGatewayProvider = StateProvider<GatewayConfig?>((ref) {
-  final saved = ref.read(appConfigProvider).selectedGateway;
-  // Skip saved gateways without auth token — connection will fail
-  if (saved != null && saved.authToken == null) return null;
-  return saved;
+  return ref.read(appConfigProvider).selectedGateway;
 });
 
 final gatewayClientProvider = Provider<GatewayClient?>((ref) {
@@ -118,7 +116,7 @@ final audioPlayerProvider = Provider<AudioPlayerService>((ref) {
 // -- Auth providers --
 
 final credentialStoreProvider = Provider<CredentialStore>((ref) {
-  return CredentialStore();
+  return CredentialStore(prefs: ref.watch(sharedPreferencesProvider));
 });
 
 final deviceIdentityServiceProvider = Provider<DeviceIdentityService>((ref) {
@@ -138,25 +136,57 @@ final pairingStateProvider = StreamProvider<PairingState>((ref) {
   return ref.watch(authServiceProvider).pairingStateChanges;
 });
 
+// -- Pairing check --
+
+final isPairedProvider = FutureProvider.family<bool, String>((ref, host) {
+  final authService = ref.watch(authServiceProvider);
+  return authService.hasCredentials(host);
+});
+
 // -- Agent providers --
 
 final selectedAgentProvider = StateProvider<Agent?>((ref) => null);
 
 final agentsProvider = FutureProvider<List<Agent>>((ref) async {
   final client = ref.watch(gatewayClientProvider);
-  if (client == null) {
+  final gateway = ref.watch(selectedGatewayProvider);
+  if (client == null || gateway == null) {
     throw StateError('Not connected to gateway');
   }
 
-  // 1. Open WebSocket
-  if (client.state == ConnectionState.disconnected) {
-    await client.connect();
+  // 1. Ensure fresh connection
+  final authService = ref.read(authServiceProvider);
+  final paired = await authService.hasCredentials(gateway.host);
+
+  if (client.state != ConnectionState.disconnected) {
+    await client.disconnect(clearAuth: true);
   }
 
-  // 2. Send connect handshake with token auth
-  final response = await client.sendConnect(
-    authToken: client.authToken,
-  );
+  // 2. Open WebSocket — capture nonce for signed auth before connect
+  final nonceFuture = paired ? client.waitForChallengeNonce() : null;
+  await client.connect();
+  final nonce = await nonceFuture;
+
+  // 3. Send connect handshake
+  final GatewayResponse response;
+  if (paired && nonce != null) {
+    final authParams = await authService.buildAuthParams(
+      gatewayHost: gateway.host,
+      nonce: nonce,
+    );
+    response = await client.sendConnect(
+      authParams: authParams,
+      authParamsBuilder: () async {
+        final freshNonce = await client.waitForChallengeNonce();
+        return authService.buildAuthParams(
+          gatewayHost: gateway.host,
+          nonce: freshNonce,
+        );
+      },
+    );
+  } else {
+    response = await client.sendConnect(authToken: client.authToken);
+  }
 
   // 3. Extract agents from the connect response snapshot
   return GatewayClient.extractAgentsFromSnapshot(response);
@@ -185,6 +215,7 @@ final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agen
     vad: vad,
     player: player,
     recorder: recorder,
+    agentId: agentId,
   )..continuousMode = continuous;
   ref.onDispose(pipeline.dispose);
   return pipeline;

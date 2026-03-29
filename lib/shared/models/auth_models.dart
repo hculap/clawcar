@@ -49,6 +49,9 @@ abstract class GatewayCredentials with _$GatewayCredentials {
     /// Bearer token (when method == token).
     String? token,
 
+    /// Device token issued by gateway after pairing (when method == signed).
+    String? deviceToken,
+
     /// Whether pairing has been completed with this gateway.
     @Default(false) bool paired,
 

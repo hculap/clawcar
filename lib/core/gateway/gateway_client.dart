@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../shared/models/agent.dart';
@@ -26,22 +27,13 @@ abstract final class GatewayClientDefaults {
 }
 
 /// Factory function for creating WebSocket channels.
-///
-/// Extracted to allow injection in tests.
 typedef WebSocketChannelFactory = WebSocketChannel Function(Uri uri);
 
 WebSocketChannel _defaultFactory(Uri uri) => WebSocketChannel.connect(uri);
 
+const _uuid = Uuid();
+
 /// OpenClaw Gateway Protocol v3 WebSocket client.
-///
-/// Handles:
-/// - WebSocket connection to ws(s)://host:port
-/// - Three frame types: req, res, event
-/// - Request/response correlation via ID
-/// - Challenge-response authentication handshake
-/// - Exponential backoff reconnection (1s → 30s cap)
-/// - Heartbeat ping every 15s with missed-pong detection
-/// - Pending request timeout (30s)
 class GatewayClient {
   final String host;
   final int port;
@@ -63,9 +55,11 @@ class GatewayClient {
   int _missedPongs = 0;
   bool _disposed = false;
   Completer<void>? _connectCompleter;
+  Completer<String>? _nonceCompleter;
 
-  // Cached auth token for reconnection.
+  // Cached auth for reconnection.
   String? _cachedAuthToken;
+  Future<Map<String, dynamic>> Function()? _authParamsBuilder;
 
   GatewayClient({
     required this.host,
@@ -77,22 +71,11 @@ class GatewayClient {
   })  : _channelFactory = channelFactory ?? _defaultFactory,
         _random = random ?? Random();
 
-  /// Current connection state.
   ConnectionState get state => _state;
-
-  /// Stream of server-initiated events.
   Stream<GatewayEvent> get events => _eventController.stream;
-
-  /// Stream of connection state transitions.
   Stream<ConnectionState> get stateChanges => _stateController.stream;
-
-  /// Whether the client has been disposed.
   bool get isDisposed => _disposed;
 
-  /// Establishes a WebSocket connection to the gateway.
-  ///
-  /// Throws [StateError] if the client has been disposed.
-  /// Rethrows connection errors after scheduling a reconnect.
   Future<void> connect() async {
     if (_disposed) {
       throw StateError('Cannot connect: client has been disposed');
@@ -115,29 +98,23 @@ class GatewayClient {
       _setState(ConnectionState.authenticating);
       _missedPongs = 0;
 
-      // On reconnection, replay the connect handshake before starting
-      // heartbeat. Without this the gateway rejects all frames with
-      // "invalid handshake: first request must be connect".
-      if (_cachedAuthToken != null) {
+      if (_authParamsBuilder != null) {
+        final freshParams = await _authParamsBuilder!();
+        await sendConnect(authParams: freshParams);
+        _reconnectAttempt = 0;
+      } else if (_cachedAuthToken != null) {
         await sendConnect(authToken: _cachedAuthToken);
         _reconnectAttempt = 0;
       }
-      // On first connect, heartbeat starts after sendConnect is called
-      // by the provider (which triggers _setState → connected → heartbeat).
     } catch (e) {
       if (_state != ConnectionState.reconnecting) {
-        _setState(ConnectionState.disconnected);
+        _setState(ConnectionState.reconnecting);
         _scheduleReconnect();
       }
       rethrow;
     }
   }
 
-  /// Sends a [GatewayRequest] and returns the correlated [GatewayResponse].
-  ///
-  /// Throws [StateError] if not connected.
-  /// Throws [TimeoutException] if no response within 30s.
-  /// Throws [GatewayException] if the response has `ok: false`.
   Future<GatewayResponse> send(GatewayRequest request) {
     if (_channel == null) {
       throw StateError('Not connected to gateway');
@@ -159,33 +136,52 @@ class GatewayClient {
     );
   }
 
-  /// Sends the `connect` handshake request to initiate authentication.
-  ///
-  /// The gateway may respond with a `connect.challenge` event (handled
-  /// internally) before returning the final [GatewayResponse].
+  /// Returns a future that completes with the nonce from the next
+  /// `connect.challenge` event.
+  Future<String> waitForChallengeNonce() {
+    _nonceCompleter ??= Completer<String>();
+    return _nonceCompleter!.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        _nonceCompleter = null;
+        throw TimeoutException('No challenge nonce received');
+      },
+    );
+  }
+
   Future<GatewayResponse> sendConnect({
     String? authToken,
+    Map<String, dynamic>? authParams,
+    Future<Map<String, dynamic>> Function()? authParamsBuilder,
   }) async {
-    final token = authToken ?? this.authToken;
-    _cachedAuthToken = token;
+    final params = <String, dynamic>{
+      'minProtocol': gatewayProtocolVersion,
+      'maxProtocol': gatewayProtocolVersion,
+      'client': {
+        'id': 'cli',
+        'version': '0.1.0',
+        'platform': 'mobile',
+        'mode': 'cli',
+      },
+      'role': 'operator',
+      'scopes': ['operator.admin', 'operator.read', 'operator.write'],
+    };
+
+    if (authParams != null) {
+      params.addAll(authParams);
+      _authParamsBuilder = authParamsBuilder;
+      _cachedAuthToken = null;
+    } else {
+      final token = authToken ?? this.authToken;
+      if (token != null) {
+        params['auth'] = {'token': token};
+      }
+      _authParamsBuilder = null;
+      _cachedAuthToken = token;
+    }
 
     final response = await send(
-      GatewayRequest(
-        method: 'connect',
-        params: {
-          'minProtocol': gatewayProtocolVersion,
-          'maxProtocol': gatewayProtocolVersion,
-          'client': {
-            'id': 'cli',
-            'version': '0.1.0',
-            'platform': 'mobile',
-            'mode': 'cli',
-          },
-          'role': 'operator',
-          'scopes': ['operator.admin', 'operator.read', 'operator.write'],
-          if (token != null) 'auth': {'token': token},
-        },
-      ),
+      GatewayRequest(method: 'connect', params: params),
     );
     if (response.ok) {
       _setState(ConnectionState.connected);
@@ -193,21 +189,113 @@ class GatewayClient {
     return response;
   }
 
-  /// Sends raw audio data to the gateway for STT processing.
-  Future<GatewayResponse> sendAudio(List<int> audioData) {
-    return send(
+  /// Sends a chat message and collects the full assistant response text
+  /// via streaming events.
+  ///
+  /// Returns the complete response text once the `chat` event with
+  /// `state: "final"` is received.
+  Future<String> sendChat(String message, {String? agentId}) async {
+    final sessionId = _uuid.v4();
+    final sessionKey = agentId != null
+        ? 'agent:$agentId:$sessionId'
+        : sessionId;
+    final idempotencyKey = _uuid.v4();
+
+    // Set up event listener BEFORE sending to avoid missing early events
+    final responseCompleter = Completer<String>();
+    final buffer = StringBuffer();
+
+    late final StreamSubscription<GatewayEvent> sub;
+    sub = events.listen((event) {
+      if (responseCompleter.isCompleted) return;
+
+      final payload = event.payload;
+
+      if (event.event == 'chat') {
+        final state = payload['state'] as String?;
+        if (state == 'final') {
+          final msg = payload['message'] as Map<String, dynamic>?;
+          final content = msg?['content'] as List<dynamic>?;
+          final text = content
+              ?.whereType<Map<String, dynamic>>()
+              .where((c) => c['type'] == 'text')
+              .map((c) => c['text'] as String?)
+              .where((t) => t != null)
+              .join('');
+          responseCompleter.complete(text ?? buffer.toString());
+          sub.cancel();
+        } else if (state == 'error') {
+          final errorMsg =
+              payload['errorMessage'] as String? ?? 'Chat error';
+          responseCompleter.completeError(
+            GatewayException(code: 'CHAT_ERROR', message: errorMsg),
+          );
+          sub.cancel();
+        }
+      }
+    });
+
+    // Send the chat request
+    final response = await send(
       GatewayRequest(
-        method: 'voice.send',
+        method: 'chat.send',
         params: {
-          'audio': base64Encode(audioData),
-          'format': 'pcm16',
-          'sampleRate': 16000,
+          'message': message,
+          'sessionKey': sessionKey,
+          'idempotencyKey': idempotencyKey,
         },
       ),
     );
+
+    if (!response.ok) {
+      sub.cancel();
+      throw GatewayException(
+        code: response.error?.code ?? 'CHAT_SEND_FAILED',
+        message: response.error?.message ?? 'Failed to send chat',
+      );
+    }
+
+    // Wait for the complete response (60s timeout for LLM responses)
+    return responseCompleter.future.timeout(
+      const Duration(seconds: 60),
+      onTimeout: () {
+        sub.cancel();
+        final partial = buffer.toString();
+        if (partial.isNotEmpty) return partial;
+        throw TimeoutException('Chat response timed out');
+      },
+    );
   }
 
-  /// Extracts agents from a connect response's snapshot.
+  /// Converts text to speech via the gateway's TTS provider.
+  ///
+  /// Returns the audio file path on the gateway host.
+  Future<String> convertTts(String text) async {
+    final response = await send(
+      GatewayRequest(
+        method: 'tts.convert',
+        params: {'text': text},
+      ),
+    );
+
+    if (!response.ok) {
+      throw GatewayException(
+        code: response.error?.code ?? 'TTS_FAILED',
+        message: response.error?.message ?? 'TTS conversion failed',
+      );
+    }
+
+    final audioPath = response.payload?['audioPath'] as String?;
+    if (audioPath == null) {
+      throw const GatewayException(
+        code: 'TTS_NO_PATH',
+        message: 'TTS response missing audioPath',
+      );
+    }
+
+    return audioPath;
+  }
+
   static List<Agent> extractAgentsFromSnapshot(GatewayResponse response) {
     final snapshot =
         response.payload?['snapshot'] as Map<String, dynamic>? ?? {};
@@ -224,15 +312,18 @@ class GatewayClient {
   }
 
   /// Gracefully disconnects from the gateway.
-  ///
-  /// Cancels heartbeat and reconnect timers, closes the WebSocket,
-  /// and fails all pending requests.
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool clearAuth = false}) async {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _connectCompleter = null;
+    _nonceCompleter = null;
+
+    if (clearAuth) {
+      _cachedAuthToken = null;
+      _authParamsBuilder = null;
+    }
 
     await _subscription?.cancel();
     _subscription = null;
@@ -243,9 +334,6 @@ class GatewayClient {
     _setState(ConnectionState.disconnected);
   }
 
-  /// Permanently tears down the client.
-  ///
-  /// After disposal, the client cannot be reconnected.
   void dispose() {
     if (_disposed) return;
     _disposed = true;
@@ -266,9 +354,7 @@ class GatewayClient {
     _stateController.close();
   }
 
-  // ---------------------------------------------------------------------------
-  // Message handling
-  // ---------------------------------------------------------------------------
+  // -- Message handling --
 
   void _onMessage(dynamic raw) {
     if (raw is! String) return;
@@ -286,7 +372,6 @@ class GatewayClient {
       case GatewayEvent():
         _handleEvent(frame);
       case GatewayRequest():
-        // Server-initiated requests are not expected in v3.
         break;
     }
   }
@@ -309,7 +394,15 @@ class GatewayClient {
   void _handleEvent(GatewayEvent event) {
     switch (event.event) {
       case 'connect.challenge':
-        _handleChallenge(event);
+        final nonce = event.payload['nonce'] as String?;
+        if (nonce != null &&
+            _nonceCompleter != null &&
+            !_nonceCompleter!.isCompleted) {
+          _nonceCompleter!.complete(nonce);
+          _nonceCompleter = null;
+        } else {
+          _handleChallenge(event);
+        }
       case 'connect.ok':
         _setState(ConnectionState.connected);
         _connectCompleter?.complete();
@@ -320,14 +413,10 @@ class GatewayClient {
     }
   }
 
-  /// Handles the challenge-response authentication handshake.
-  ///
-  /// When the server sends a `connect.challenge` event, the client
-  /// responds with a `connect.respond` request containing the
-  /// challenge solution (HMAC of the nonce with the auth token).
   void _handleChallenge(GatewayEvent event) {
     final nonce = event.payload['nonce'] as String?;
-    if (nonce == null || authToken == null) {
+    final token = _cachedAuthToken ?? authToken;
+    if (nonce == null || token == null) {
       _setState(ConnectionState.connected);
       return;
     }
@@ -337,10 +426,7 @@ class GatewayClient {
     send(
       GatewayRequest(
         method: 'connect.respond',
-        params: {
-          'nonce': nonce,
-          'token': authToken,
-        },
+        params: {'nonce': nonce, 'token': token},
       ),
     ).then((_) {
       _setState(ConnectionState.connected);
@@ -353,9 +439,7 @@ class GatewayClient {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Error / close handling
-  // ---------------------------------------------------------------------------
+  // -- Error / close handling --
 
   void _onError(Object error) {
     if (_disposed) return;
@@ -382,9 +466,7 @@ class GatewayClient {
     _failPendingRequests(StateError('Connection lost'));
   }
 
-  // ---------------------------------------------------------------------------
-  // Heartbeat
-  // ---------------------------------------------------------------------------
+  // -- Heartbeat --
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
@@ -407,14 +489,10 @@ class GatewayClient {
     _missedPongs++;
     send(GatewayRequest(method: 'ping')).then((_) {
       _missedPongs = 0;
-    }).catchError((_) {
-      // Timeout or error already handled by send().
-    });
+    }).catchError((_) {});
   }
 
-  // ---------------------------------------------------------------------------
-  // Reconnection with exponential backoff + jitter
-  // ---------------------------------------------------------------------------
+  // -- Reconnection --
 
   void _scheduleReconnect() {
     if (_disposed) return;
@@ -425,17 +503,11 @@ class GatewayClient {
 
     _reconnectTimer = Timer(delay, () {
       if (!_disposed && _state == ConnectionState.reconnecting) {
-        connect().catchError((_) {
-          // connect() already schedules the next reconnect on failure.
-        });
+        connect().catchError((_) {});
       }
     });
   }
 
-  /// Calculates exponential backoff with jitter.
-  ///
-  /// Base delay doubles each attempt (1s, 2s, 4s, …) capped at 30s.
-  /// Jitter adds ±25% randomness to prevent thundering-herd.
   Duration _backoffDuration(int attempt) {
     final baseSeconds = min(1 << attempt, 30);
     final jitter = baseSeconds * 0.25 * (2 * _random.nextDouble() - 1);
@@ -443,9 +515,7 @@ class GatewayClient {
     return Duration(milliseconds: max(totalMs, 500));
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+  // -- Helpers --
 
   void _setState(ConnectionState newState) {
     if (_disposed || _state == newState) return;

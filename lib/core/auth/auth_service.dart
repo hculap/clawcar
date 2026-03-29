@@ -2,15 +2,20 @@ import 'dart:async';
 
 import '../../shared/models/auth_models.dart';
 import '../gateway/gateway_client.dart';
-import '../gateway/gateway_protocol.dart';
 import 'credential_store.dart';
 import 'device_identity_service.dart';
 
 /// Orchestrates device authentication and pairing with gateways.
 ///
-/// Supports two auth methods:
-/// 1. **Signed auth** — Ed25519-signed payload (primary, requires pairing).
-/// 2. **Token auth** — Simple bearer token (alternative, no pairing needed).
+/// The gateway supports implicit device pairing: including a signed
+/// `device` object alongside a valid `auth.token` in the connect
+/// handshake automatically registers the device and returns a
+/// `deviceToken` for future signed-only connects.
+///
+/// Auth modes:
+/// 1. **Token only** — `{'auth': {'token': '...'}}`  (limited scopes)
+/// 2. **Device + token** — device identity signed + token (first pair, full scopes)
+/// 3. **Device + deviceToken** — signed + stored token (subsequent connects)
 class AuthService {
   final DeviceIdentityService _identityService;
   final CredentialStore _store;
@@ -30,23 +35,47 @@ class AuthService {
   Stream<PairingState> get pairingStateChanges =>
       _pairingStateController.stream;
 
-  /// Builds the auth params for the gateway connect handshake.
+  /// Builds auth params for the gateway connect handshake.
   ///
-  /// Returns a map suitable for inclusion in the `connect` request params.
-  /// Checks for stored credentials first, falls back to signed auth.
+  /// If a [nonce] from `connect.challenge` is provided, includes a signed
+  /// device identity for full operator scopes. Otherwise falls back to
+  /// token-only auth.
+  ///
+  /// The returned map is merged into `connect.params`.
   Future<Map<String, dynamic>> buildAuthParams({
     required String gatewayHost,
+    String? nonce,
   }) async {
     final credentials = await _store.getGatewayCredentials(gatewayHost);
+    final identity = await _identityService.getOrCreateIdentity();
 
-    if (credentials != null && credentials.method == AuthMethod.token) {
-      return _buildTokenAuthParams(credentials);
+    final params = <String, dynamic>{};
+
+    // Auth block
+    if (credentials?.deviceToken != null) {
+      params['auth'] = {'deviceToken': credentials!.deviceToken};
+    } else if (credentials?.token != null) {
+      params['auth'] = {'token': credentials!.token};
     }
 
-    return _buildSignedAuthParams();
+    // Device identity (signed)
+    if (nonce != null) {
+      final token = credentials?.deviceToken ?? credentials?.token ?? '';
+      params['device'] = await _identityService.buildDeviceParams(
+        identity: identity,
+        nonce: nonce,
+        clientId: 'cli',
+        clientMode: 'cli',
+        role: 'operator',
+        scopes: ['operator.admin', 'operator.read', 'operator.write'],
+        token: token,
+      );
+    }
+
+    return params;
   }
 
-  /// Builds auth params using a pre-configured token.
+  /// Stores token-only credentials for a gateway.
   Future<Map<String, dynamic>> authenticateWithToken({
     required String gatewayHost,
     required String token,
@@ -55,102 +84,98 @@ class AuthService {
       gatewayHost: gatewayHost,
       method: AuthMethod.token,
       token: token,
-      paired: true,
+      paired: false,
       lastAuthAt: DateTime.now(),
     );
     await _store.setGatewayCredentials(credentials);
 
-    return _buildTokenAuthParams(credentials);
+    return {'auth': {'token': token}};
   }
 
-  /// Initiates the pairing code flow for a new device.
+  /// Initiates device pairing by sending a connect with device identity.
   ///
-  /// 1. Sends `device.pair.request` to the gateway with the device's public key.
-  /// 2. Gateway displays a pairing code to the user.
-  /// 3. User enters the code via [submitPairingCode].
-  Future<void> startPairing({
+  /// Flow:
+  /// 1. Client connects with token auth (already done by caller)
+  /// 2. This method disconnects, reconnects, and sends a connect with
+  ///    device identity + token
+  /// 3. Gateway auto-pairs the device and returns a deviceToken
+  /// 4. Credentials are stored for future signed-only connects
+  Future<bool> pairDevice({
     required GatewayClient client,
     required String gatewayHost,
-  }) async {
-    _setPairingState(PairingState.awaitingCode(gatewayHost: gatewayHost));
-
-    try {
-      final identity = await _identityService.getOrCreateIdentity();
-
-      final response = await client.send(
-        GatewayRequest(
-          method: 'device.pair.request',
-          params: {
-            'deviceId': identity.deviceId,
-            'publicKey': identity.publicKey,
-          },
-        ),
-      );
-
-      if (!response.ok) {
-        _setPairingState(PairingState.failed(
-          gatewayHost: gatewayHost,
-          error: response.error?.message ?? 'Pairing request rejected',
-        ));
-      }
-    } catch (e) {
-      _setPairingState(PairingState.failed(
-        gatewayHost: gatewayHost,
-        error: 'Failed to start pairing: $e',
-      ));
-    }
-  }
-
-  /// Submits the pairing code entered by the user.
-  ///
-  /// If the gateway accepts, stores signed-auth credentials for future use.
-  Future<bool> submitPairingCode({
-    required GatewayClient client,
-    required String gatewayHost,
-    required String code,
+    required String token,
   }) async {
     _setPairingState(PairingState.verifying(gatewayHost: gatewayHost));
 
     try {
       final identity = await _identityService.getOrCreateIdentity();
 
-      final response = await client.send(
-        GatewayRequest(
-          method: 'device.pair.confirm',
-          params: {
-            'deviceId': identity.deviceId,
-            'code': code,
-          },
-        ),
+      // Disconnect and clear cached auth so connect() doesn't auto-replay
+      await client.disconnect(clearAuth: true);
+
+      // Set up nonce listener BEFORE connect (challenge arrives on open)
+      final nonceFuture = client.waitForChallengeNonce();
+      await client.connect();
+      final nonce = await nonceFuture;
+
+      // Build signed device params
+      final deviceParams = await _identityService.buildDeviceParams(
+        identity: identity,
+        nonce: nonce,
+        clientId: 'cli',
+        clientMode: 'cli',
+        role: 'operator',
+        scopes: ['operator.admin', 'operator.read', 'operator.write'],
+        token: token,
+      );
+
+      // Send connect with device identity + token
+      final response = await client.sendConnect(
+        authParams: {
+          'auth': {'token': token},
+          'device': deviceParams,
+        },
       );
 
       if (response.ok) {
+        // Extract deviceToken from response
+        final authData =
+            response.payload?['auth'] as Map<String, dynamic>? ?? {};
+        final deviceToken = authData['deviceToken'] as String?;
+
         final credentials = GatewayCredentials(
           gatewayHost: gatewayHost,
           method: AuthMethod.signed,
+          token: token,
+          deviceToken: deviceToken,
           paired: true,
           lastAuthAt: DateTime.now(),
         );
         await _store.setGatewayCredentials(credentials);
+
+        // Disconnect so the caller's agentsProvider opens a fresh
+        // connection with the newly stored signed credentials.
+        await client.disconnect();
+
         _setPairingState(PairingState.completed(gatewayHost: gatewayHost));
         return true;
       }
 
-      _setPairingState(PairingState.failed(
-        gatewayHost: gatewayHost,
-        error: response.error?.message ?? 'Invalid pairing code',
-      ));
+      final errorMsg = response.error?.message ?? 'Pairing failed';
+      _setPairingState(
+        PairingState.failed(gatewayHost: gatewayHost, error: errorMsg),
+      );
       return false;
     } catch (e) {
       _setPairingState(PairingState.failed(
         gatewayHost: gatewayHost,
-        error: 'Pairing verification failed: $e',
+        error: 'Pairing failed: $e',
       ));
       return false;
     }
   }
 
-  /// Checks whether the device has stored credentials for a gateway.
+  /// Checks whether the device has stored paired credentials for a gateway.
   Future<bool> hasCredentials(String gatewayHost) async {
     final credentials = await _store.getGatewayCredentials(gatewayHost);
     return credentials != null && credentials.paired;
@@ -175,34 +200,6 @@ class AuthService {
 
   void dispose() {
     _pairingStateController.close();
-  }
-
-  // -- Private helpers --
-
-  Map<String, dynamic> _buildTokenAuthParams(
-    GatewayCredentials credentials,
-  ) {
-    return {
-      'auth': {'token': credentials.token},
-    };
-  }
-
-  Future<Map<String, dynamic>> _buildSignedAuthParams() async {
-    final identity = await _identityService.getOrCreateIdentity();
-    final payload = await _identityService.signAuthPayload(
-      identity: identity,
-    );
-
-    return {
-      'auth': {
-        'type': 'signed',
-        'payload': payload.toJson(),
-      },
-      'device': {
-        'id': identity.deviceId,
-        'publicKey': identity.publicKey,
-      },
-    };
   }
 
   void _setPairingState(PairingState state) {
