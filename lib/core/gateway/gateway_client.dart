@@ -124,10 +124,11 @@ class GatewayClient {
           clientId: _cachedClientId!,
           deviceId: _cachedDeviceId!,
         );
+        _reconnectAttempt = 0;
+        _startHeartbeat();
       }
-
-      _reconnectAttempt = 0;
-      _startHeartbeat();
+      // On first connect, heartbeat starts after sendConnect is called
+      // by the provider (which triggers _setState → connected → heartbeat).
     } catch (e) {
       if (_state != ConnectionState.reconnecting) {
         _setState(ConnectionState.disconnected);
@@ -447,6 +448,9 @@ class GatewayClient {
   void _setState(ConnectionState newState) {
     if (_disposed || _state == newState) return;
     _state = newState;
+    if (newState == ConnectionState.connected) {
+      _startHeartbeat();
+    }
     _stateController.add(newState);
   }
 
