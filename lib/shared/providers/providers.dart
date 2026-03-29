@@ -215,6 +215,7 @@ final voicePipelineProvider = Provider.family<VoicePipeline?, String>((ref, agen
     vad: vad,
     player: player,
     recorder: recorder,
+    agentId: agentId,
   )..continuousMode = continuous;
   ref.onDispose(pipeline.dispose);
   return pipeline;

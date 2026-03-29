@@ -37,6 +37,7 @@ class VoicePipeline {
   final VadServiceBase _vad;
   final AudioPlayerBase _player;
   final AudioRecorderBase _recorder;
+  final String? agentId;
 
   final _stateController = StreamController<PipelineState>.broadcast();
   final _errorController = StreamController<VoicePipelineError>.broadcast();
@@ -53,6 +54,7 @@ class VoicePipeline {
     required VadServiceBase vad,
     required AudioPlayerBase player,
     required AudioRecorderBase recorder,
+    this.agentId,
   })  : _gateway = gateway,
         _vad = vad,
         _player = player,
@@ -173,6 +175,7 @@ class VoicePipeline {
       final durationSecs = (audioData.length / 32000).toStringAsFixed(1);
       final responseText = await _gateway.sendChat(
         '[Voice message: ${durationSecs}s of audio received]',
+        agentId: agentId,
       );
 
       if (_disposed || responseText.isEmpty) {

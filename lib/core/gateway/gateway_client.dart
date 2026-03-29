@@ -194,8 +194,11 @@ class GatewayClient {
   ///
   /// Returns the complete response text once the `chat` event with
   /// `state: "final"` is received.
-  Future<String> sendChat(String message) async {
-    final sessionKey = _uuid.v4();
+  Future<String> sendChat(String message, {String? agentId}) async {
+    final sessionId = _uuid.v4();
+    final sessionKey = agentId != null
+        ? 'agent:$agentId:$sessionId'
+        : sessionId;
     final idempotencyKey = _uuid.v4();
 
     // Set up event listener BEFORE sending to avoid missing early events
