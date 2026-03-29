@@ -88,7 +88,8 @@ class _VoiceChatScreenState extends ConsumerState<VoiceChatScreen> {
       setState(() {
         _pipelineState = state;
         _statusText = _statusTextFor(state);
-        if (state != PipelineState.error) {
+        // Only clear error when starting a new recording
+        if (state == PipelineState.listening) {
           _errorMessage = null;
         }
       });

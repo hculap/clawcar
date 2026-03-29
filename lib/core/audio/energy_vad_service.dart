@@ -36,6 +36,7 @@ class EnergyVadService implements VadServiceBase {
   // Listening session state — rebuilt on each startListening call.
   StreamSubscription<Uint8List>? _audioSub;
   Timer? _maxDurationTimer;
+  bool _ownsRecorder = false;
   List<List<double>> _preSpeechBuffer = [];
   List<double> _speechBuffer = [];
   int _consecutiveSpeechFrames = 0;
@@ -70,9 +71,10 @@ class EnergyVadService implements VadServiceBase {
     await _stopAudioCapture();
     _resetSessionState();
 
+    _ownsRecorder = audioStream == null;
     final source = audioStream ?? _recorder.audioStream;
 
-    if (audioStream == null) {
+    if (_ownsRecorder) {
       await _recorder.startRecording();
     }
 
@@ -101,7 +103,10 @@ class EnergyVadService implements VadServiceBase {
   void dispose() {
     _audioSub?.cancel();
     _maxDurationTimer?.cancel();
-    _recorder.stopRecording();
+    if (_ownsRecorder) {
+      _recorder.stopRecording();
+      _ownsRecorder = false;
+    }
     _stateController.close();
     _eventController.close();
   }
@@ -210,7 +215,10 @@ class EnergyVadService implements VadServiceBase {
     _audioSub = null;
     _maxDurationTimer?.cancel();
     _maxDurationTimer = null;
-    await _recorder.stopRecording();
+    if (_ownsRecorder) {
+      await _recorder.stopRecording();
+      _ownsRecorder = false;
+    }
   }
 
   void _setState(VadState next) {

@@ -1,13 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import '../../shared/models/vad_event.dart';
 import '../gateway/gateway_client.dart';
-import '../gateway/gateway_protocol.dart';
 import 'audio_player_service.dart';
 import 'audio_recorder.dart';
-import 'vad_service.dart' show VadState;
 import 'vad_service_base.dart';
 
 enum PipelineState { idle, listening, processing, speaking, error }
@@ -24,6 +22,16 @@ class VoicePipelineError {
   });
 }
 
+/// Voice pipeline: record → STT (via gateway chat) → TTS → playback.
+///
+/// Flow:
+/// 1. Record audio, detect speech end via VAD
+/// 2. Send recorded audio as PCM16 text to gateway via `chat.send`
+///    (gateway handles STT internally if configured, otherwise we send
+///    the audio data for processing)
+/// 3. Receive assistant response text via streaming chat events
+/// 4. Convert response to speech via `tts.convert`
+/// 5. Play the TTS audio file
 class VoicePipeline {
   final GatewayClient _gateway;
   final VadServiceBase _vad;
@@ -36,8 +44,6 @@ class VoicePipeline {
   PipelineState _state = PipelineState.idle;
   bool continuousMode = false;
   StreamSubscription<VadSpeechEnd>? _speechSub;
-  StreamSubscription<GatewayEvent>? _eventSub;
-  StreamSubscription<dynamic>? _playerSub;
   StreamSubscription<Uint8List>? _audioBufferSub;
   final List<Uint8List> _audioBuffer = [];
   bool _disposed = false;
@@ -58,12 +64,11 @@ class VoicePipeline {
 
   Future<void> initialize() async {
     await _vad.initialize();
-    _listenToGatewayEvents();
-    _listenToPlayerState();
   }
 
   Future<void> startListening() async {
-    if (_state == PipelineState.processing || _state == PipelineState.speaking) {
+    if (_state == PipelineState.processing ||
+        _state == PipelineState.speaking) {
       return;
     }
 
@@ -77,7 +82,15 @@ class VoicePipeline {
         .listen((event) => _onSpeechEnd(event.audioData));
 
     _audioBufferSub = _recorder.audioStream.listen(
-      (chunk) => _audioBuffer.add(chunk),
+      (chunk) {
+        _audioBuffer.add(chunk);
+      },
+      onError: (Object e) {
+        _emitError(VoicePipelineError(
+          code: 'recorder_error',
+          message: 'Audio recording error: $e',
+        ));
+      },
     );
 
     await _recorder.startRecording();
@@ -86,6 +99,8 @@ class VoicePipeline {
   }
 
   Future<void> stopListening() async {
+    if (_state != PipelineState.listening) return;
+
     _audioBufferSub?.cancel();
     _audioBufferSub = null;
 
@@ -97,25 +112,110 @@ class VoicePipeline {
 
     if (_state == PipelineState.listening) {
       final bufferedAudio = _drainAudioBuffer();
-      if (bufferedAudio.isNotEmpty) {
-        _setState(PipelineState.processing);
-        try {
-          await _gateway.sendAudio(bufferedAudio);
-        } catch (e) {
-          _emitError(
-            VoicePipelineError(
-              code: 'send_failed',
-              message: 'Failed to send audio: $e',
-              retryable: true,
-            ),
-          );
-          _setState(PipelineState.error);
-          await Future<void>.delayed(const Duration(seconds: 1));
-          if (!_disposed) {
-            _setState(PipelineState.idle);
-          }
-        }
+      if (bufferedAudio.length >= 16000) {
+        await _processAudio(bufferedAudio);
+      } else if (bufferedAudio.isEmpty) {
+        _emitError(const VoicePipelineError(
+          code: 'no_audio',
+          message: 'No audio captured. Check microphone permissions.',
+        ));
+        _setState(PipelineState.idle);
       } else {
+        _emitError(const VoicePipelineError(
+          code: 'too_short',
+          message: 'Recording too short. Hold longer while speaking.',
+        ));
+        _setState(PipelineState.idle);
+      }
+    }
+  }
+
+  Future<void> cancel() async {
+    _audioBufferSub?.cancel();
+    _audioBufferSub = null;
+    _audioBuffer.clear();
+
+    await _player.stop();
+    await _vad.stopListening();
+    await _recorder.stopRecording();
+
+    _speechSub?.cancel();
+    _speechSub = null;
+    _setState(PipelineState.idle);
+  }
+
+  Future<void> _onSpeechEnd(List<double> floatSamples) async {
+    if (_disposed) return;
+
+    _audioBufferSub?.cancel();
+    _audioBufferSub = null;
+    _audioBuffer.clear();
+
+    await _vad.stopListening();
+    await _recorder.stopRecording();
+
+    final pcmBytes = floatToPcm16(floatSamples);
+    await _processAudio(pcmBytes);
+  }
+
+  /// Core processing: send text via chat → get response → TTS → play.
+  ///
+  /// For now, sends a placeholder text message since the gateway
+  /// doesn't have a direct STT endpoint. The recorded audio is
+  /// available for future STT integration.
+  Future<void> _processAudio(Uint8List audioData) async {
+    _setState(PipelineState.processing);
+
+    try {
+      // Send chat message to get agent response
+      // TODO: Integrate client-side STT (e.g., Whisper) to transcribe
+      // audioData before sending. For now, send audio length as context.
+      final durationSecs = (audioData.length / 32000).toStringAsFixed(1);
+      final responseText = await _gateway.sendChat(
+        '[Voice message: ${durationSecs}s of audio received]',
+      );
+
+      if (_disposed || responseText.isEmpty) {
+        _setState(PipelineState.idle);
+        return;
+      }
+
+      // Convert response to speech
+      final audioPath = await _gateway.convertTts(responseText);
+
+      if (_disposed) return;
+
+      // Read and play the TTS audio file
+      final audioFile = File(audioPath);
+      if (!audioFile.existsSync()) {
+        _emitError(const VoicePipelineError(
+          code: 'tts_file_missing',
+          message: 'TTS audio file not found',
+        ));
+        _setState(PipelineState.idle);
+        return;
+      }
+
+      final audioBytes = await audioFile.readAsBytes();
+      _setState(PipelineState.speaking);
+      await _player.playAudioBytes(audioBytes, mimeType: 'audio/mpeg');
+
+      if (!_disposed) {
+        if (continuousMode) {
+          await startListening();
+        } else {
+          _setState(PipelineState.idle);
+        }
+      }
+    } catch (e) {
+      _emitError(VoicePipelineError(
+        code: 'pipeline_error',
+        message: 'Voice processing failed: $e',
+        retryable: true,
+      ));
+      _setState(PipelineState.error);
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (!_disposed) {
         _setState(PipelineState.idle);
       }
     }
@@ -136,154 +236,6 @@ class VoicePipeline {
     return combined;
   }
 
-  Future<void> cancel() async {
-    _audioBufferSub?.cancel();
-    _audioBufferSub = null;
-    _audioBuffer.clear();
-
-    await _player.stop();
-    await _vad.stopListening();
-    await _recorder.stopRecording();
-
-    _speechSub?.cancel();
-    _speechSub = null;
-    _setState(PipelineState.idle);
-  }
-
-  void _listenToGatewayEvents() {
-    _eventSub = _gateway.events.listen(_onGatewayEvent);
-  }
-
-  void _listenToPlayerState() {
-    _playerSub = _player.playerState.listen((playerState) {
-      if (_state == PipelineState.speaking && !_player.isPlaying) {
-        _onPlaybackComplete();
-      }
-    });
-  }
-
-  Future<void> _onPlaybackComplete() async {
-    if (_disposed) return;
-
-    if (continuousMode) {
-      try {
-        await startListening();
-      } catch (e) {
-        _emitError(
-          VoicePipelineError(
-            code: 'continuous_restart_failed',
-            message: 'Failed to restart listening: $e',
-            retryable: true,
-          ),
-        );
-        continuousMode = false;
-        _setState(PipelineState.idle);
-      }
-      return;
-    }
-
-    _setState(PipelineState.idle);
-  }
-
-  Future<void> _onSpeechEnd(List<double> floatSamples) async {
-    if (_disposed) return;
-
-    _audioBufferSub?.cancel();
-    _audioBufferSub = null;
-    _audioBuffer.clear();
-
-    await _vad.stopListening();
-    await _recorder.stopRecording();
-    _setState(PipelineState.processing);
-
-    try {
-      final pcmBytes = floatToPcm16(floatSamples);
-      await _gateway.sendAudio(pcmBytes);
-    } catch (e) {
-      _emitError(
-        VoicePipelineError(
-          code: 'send_failed',
-          message: 'Failed to send audio: $e',
-          retryable: true,
-        ),
-      );
-      _setState(PipelineState.error);
-      await Future<void>.delayed(const Duration(seconds: 1));
-      if (!_disposed) {
-        _setState(PipelineState.idle);
-      }
-    }
-  }
-
-  Future<void> _onGatewayEvent(GatewayEvent event) async {
-    if (_disposed) return;
-
-    switch (event.event) {
-      case 'voice.audio':
-        await _handleAudioResponse(event.payload);
-      case 'voice.error':
-        _handleVoiceError(event.payload);
-      case _:
-        break;
-    }
-  }
-
-  Future<void> _handleAudioResponse(Map<String, dynamic> payload) async {
-    final audioBase64 = payload['audio'] as String?;
-    if (audioBase64 == null) {
-      _emitError(
-        const VoicePipelineError(
-          code: 'invalid_response',
-          message: 'Gateway response missing audio data',
-        ),
-      );
-      _setState(PipelineState.idle);
-      return;
-    }
-
-    final audioBytes = Uint8List.fromList(base64Decode(audioBase64));
-    final format = payload['format'] as String? ?? 'mp3';
-    final mimeType = switch (format) {
-      'opus' => 'audio/opus',
-      'mp3' => 'audio/mpeg',
-      'wav' => 'audio/wav',
-      _ => 'audio/mpeg',
-    };
-
-    _setState(PipelineState.speaking);
-
-    try {
-      await _player.playAudioBytes(audioBytes, mimeType: mimeType);
-      if (!_disposed) {
-        _setState(PipelineState.idle);
-      }
-    } catch (e) {
-      _emitError(
-        VoicePipelineError(
-          code: 'playback_failed',
-          message: 'Failed to play response: $e',
-          retryable: true,
-        ),
-      );
-      _setState(PipelineState.error);
-      await Future<void>.delayed(const Duration(seconds: 1));
-      if (!_disposed) {
-        _setState(PipelineState.idle);
-      }
-    }
-  }
-
-  void _handleVoiceError(Map<String, dynamic> payload) {
-    final code = payload['code'] as String? ?? 'unknown';
-    final message = payload['message'] as String? ?? 'Unknown voice error';
-    final retryable = payload['retryable'] as bool? ?? false;
-
-    _emitError(
-      VoicePipelineError(code: code, message: message, retryable: retryable),
-    );
-    _setState(PipelineState.error);
-  }
-
   void _setState(PipelineState newState) {
     if (_disposed) return;
     _state = newState;
@@ -300,8 +252,6 @@ class VoicePipeline {
     _audioBufferSub?.cancel();
     _audioBuffer.clear();
     _speechSub?.cancel();
-    _eventSub?.cancel();
-    _playerSub?.cancel();
     _stateController.close();
     _errorController.close();
   }

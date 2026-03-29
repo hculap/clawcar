@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
@@ -5,8 +6,17 @@ import 'package:cryptography/cryptography.dart';
 import '../../shared/models/auth_models.dart';
 import 'credential_store.dart';
 
+/// Base64url encoding without padding (RFC 4648 §5).
+String _base64UrlNoPad(List<int> bytes) {
+  return base64Url.encode(bytes).replaceAll('=', '');
+}
+
 /// Manages the Ed25519 device identity: keypair generation, persistence,
 /// device ID derivation, and auth payload signing.
+///
+/// Signs connect payloads using the v2 canonical format expected by the
+/// OpenClaw gateway:
+/// `v2|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}`
 class DeviceIdentityService {
   DeviceIdentityService({
     required CredentialStore store,
@@ -21,43 +31,67 @@ class DeviceIdentityService {
   final Sha256 _sha256;
 
   DeviceIdentity? _cached;
+  Future<DeviceIdentity>? _pendingInit;
 
-  /// Clears the in-memory cached identity so the next
-  /// [getOrCreateIdentity] call reads from storage or generates fresh.
   void clearCache() {
     _cached = null;
+    _pendingInit = null;
   }
 
   /// Returns the current device identity, generating one if needed.
-  Future<DeviceIdentity> getOrCreateIdentity() async {
-    if (_cached != null) return _cached!;
-
-    final stored = await _store.getDeviceIdentity();
-    if (stored != null) {
-      _cached = stored;
-      return stored;
-    }
-
-    final identity = await _generateIdentity();
-    await _store.setDeviceIdentity(identity);
-    _cached = identity;
-    return identity;
+  ///
+  /// Safe against concurrent callers — only one init runs at a time.
+  Future<DeviceIdentity> getOrCreateIdentity() {
+    if (_cached != null) return Future.value(_cached!);
+    return _pendingInit ??= _initIdentity();
   }
 
-  /// Creates a signed auth payload v1 for gateway authentication.
-  Future<AuthPayloadV1> signAuthPayload({
-    required DeviceIdentity identity,
-    int? timestampOverride,
-  }) async {
-    final timestamp =
-        timestampOverride ?? DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  Future<DeviceIdentity> _initIdentity() async {
+    try {
+      final stored = await _store.getDeviceIdentity();
+      if (stored != null) {
+        _cached = stored;
+        return stored;
+      }
 
-    final canonicalPayload = _buildCanonicalPayload(
-      version: 1,
-      deviceId: identity.deviceId,
-      publicKey: identity.publicKey,
-      timestamp: timestamp,
-    );
+      final identity = await _generateIdentity();
+      await _store.setDeviceIdentity(identity);
+      _cached = identity;
+      return identity;
+    } finally {
+      _pendingInit = null;
+    }
+  }
+
+  /// Builds the `device` object for the gateway connect handshake.
+  ///
+  /// The returned map contains `id`, `publicKey`, `signature`, `signedAt`,
+  /// and `nonce` — ready to be included in `connect.params.device`.
+  ///
+  /// Signs the v2 canonical payload:
+  /// `v2|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}`
+  Future<Map<String, dynamic>> buildDeviceParams({
+    required DeviceIdentity identity,
+    required String nonce,
+    required String clientId,
+    required String clientMode,
+    required String role,
+    required List<String> scopes,
+    String token = '',
+  }) async {
+    final signedAt = DateTime.now().millisecondsSinceEpoch;
+
+    final canonicalPayload = [
+      'v2',
+      identity.deviceId,
+      clientId,
+      clientMode,
+      role,
+      scopes.join(','),
+      signedAt.toString(),
+      token,
+      nonce,
+    ].join('|');
 
     final keyPair = await _restoreKeyPair(identity);
     final signature = await _ed25519.sign(
@@ -65,13 +99,13 @@ class DeviceIdentityService {
       keyPair: keyPair,
     );
 
-    return AuthPayloadV1(
-      version: 1,
-      deviceId: identity.deviceId,
-      publicKey: identity.publicKey,
-      timestamp: timestamp,
-      signature: base64Encode(signature.bytes),
-    );
+    return {
+      'id': identity.deviceId,
+      'publicKey': _base64UrlNoPad(base64Decode(identity.publicKey)),
+      'signature': _base64UrlNoPad(signature.bytes),
+      'signedAt': signedAt,
+      'nonce': nonce,
+    };
   }
 
   /// Verifies that a stored identity's keypair is valid by performing
@@ -113,16 +147,5 @@ class DeviceIdentityService {
     final privateKeyBytes = base64Decode(identity.privateKey);
     final keyPair = await _ed25519.newKeyPairFromSeed(privateKeyBytes);
     return keyPair.extract();
-  }
-
-  /// Builds the canonical string representation of auth payload v1.
-  /// Format: `v1:{deviceId}:{publicKey}:{timestamp}`
-  String _buildCanonicalPayload({
-    required int version,
-    required String deviceId,
-    required String publicKey,
-    required int timestamp,
-  }) {
-    return 'v$version:$deviceId:$publicKey:$timestamp';
   }
 }

@@ -30,6 +30,11 @@ class AudioPlayerService implements AudioPlayerBase {
       final source = _BytesAudioSource(audioData, mimeType: mimeType);
       await _player.setAudioSource(source);
       await _player.play();
+
+      // Wait for playback to actually complete
+      await _player.processingStateStream.firstWhere(
+        (s) => s == ProcessingState.completed,
+      );
     } finally {
       _isPlaying = false;
     }

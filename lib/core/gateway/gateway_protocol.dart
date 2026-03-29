@@ -132,11 +132,12 @@ class GatewayEvent extends GatewayFrame {
   });
 
   factory GatewayEvent.fromMap(Map<String, dynamic> map) {
+    final sv = map['stateVersion'];
     return GatewayEvent(
       event: map['event'] as String,
       payload: (map['payload'] as Map<String, dynamic>?) ?? {},
       seq: map['seq'] as int?,
-      stateVersion: map['stateVersion'] as String?,
+      stateVersion: sv is String ? sv : sv?.toString(),
     );
   }
 }
