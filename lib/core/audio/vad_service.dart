@@ -5,6 +5,7 @@ import 'package:vad/vad.dart';
 
 import '../../shared/models/vad_event.dart' as app;
 import 'vad_config.dart';
+import 'vad_service_base.dart';
 
 /// Current state of the VAD pipeline.
 enum VadState { idle, listening, speechDetected, speechEnded }
@@ -17,7 +18,8 @@ enum VadState { idle, listening, speechDetected, speechEnded }
 ///
 /// The [VadHandler] owns its own [AudioRecorder] internally — this service
 /// does not depend on [AudioRecorderService].
-class VadService {
+
+class VadService implements VadServiceBase {
   VadService({VadConfig config = const VadConfig()}) : _config = config;
 
   final VadConfig _config;

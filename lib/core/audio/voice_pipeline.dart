@@ -34,6 +34,7 @@ class VoicePipeline {
   final _errorController = StreamController<VoicePipelineError>.broadcast();
 
   PipelineState _state = PipelineState.idle;
+  bool continuousMode = false;
   StreamSubscription<VadSpeechEnd>? _speechSub;
   StreamSubscription<GatewayEvent>? _eventSub;
   StreamSubscription<dynamic>? _playerSub;
@@ -156,9 +157,32 @@ class VoicePipeline {
   void _listenToPlayerState() {
     _playerSub = _player.playerState.listen((playerState) {
       if (_state == PipelineState.speaking && !_player.isPlaying) {
-        _setState(PipelineState.idle);
+        _onPlaybackComplete();
       }
     });
+  }
+
+  Future<void> _onPlaybackComplete() async {
+    if (_disposed) return;
+
+    if (continuousMode) {
+      try {
+        await startListening();
+      } catch (e) {
+        _emitError(
+          VoicePipelineError(
+            code: 'continuous_restart_failed',
+            message: 'Failed to restart listening: $e',
+            retryable: true,
+          ),
+        );
+        continuousMode = false;
+        _setState(PipelineState.idle);
+      }
+      return;
+    }
+
+    _setState(PipelineState.idle);
   }
 
   Future<void> _onSpeechEnd(List<double> floatSamples) async {

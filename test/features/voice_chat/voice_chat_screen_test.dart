@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:clawcar/core/audio/audio_player_service.dart';
+import 'package:clawcar/core/audio/audio_recorder.dart';
 import 'package:clawcar/core/audio/vad_service.dart';
 import 'package:clawcar/core/audio/voice_pipeline.dart';
 import 'package:clawcar/core/gateway/gateway_client.dart';
@@ -38,6 +39,19 @@ class _StubPlayer implements AudioPlayerBase {
   void dispose() {}
 }
 
+class _StubRecorder implements AudioRecorderBase {
+  @override
+  Stream<Uint8List> get audioStream => const Stream.empty();
+  @override
+  bool get isRecording => false;
+  @override
+  Future<void> startRecording() async {}
+  @override
+  Future<void> stopRecording() async {}
+  @override
+  Future<void> dispose() async {}
+}
+
 // ---------------------------------------------------------------------------
 // Fake VoicePipeline with controllable state/error streams
 // ---------------------------------------------------------------------------
@@ -56,6 +70,7 @@ class FakeVoicePipeline extends VoicePipeline {
           gateway: GatewayClient(host: 'localhost', port: 0),
           vad: VadService(),
           player: _StubPlayer(),
+          recorder: _StubRecorder(),
         );
 
   @override

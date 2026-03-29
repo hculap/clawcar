@@ -45,6 +45,15 @@ class CarPlayService {
       {'enabled': enabled},
     );
   }
+
+  Future<void> setAgents(List<dynamic> agents) async {
+    final mapped = agents.map((a) => a is Map ? a : {'id': a.toString()}).toList();
+    await _methodChannel.invokeMethod('setAgents', {'agents': mapped});
+  }
+
+  Future<void> setSelectedAgent(String agentId) async {
+    await _methodChannel.invokeMethod('setSelectedAgent', {'agentId': agentId});
+  }
 }
 
 class CarPlayEvent {
