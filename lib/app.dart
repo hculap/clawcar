@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,9 +11,10 @@ class ClawCarApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Eagerly initialize the CarPlay controller so it listens for
-    // CarPlay events even when no CarPlay-specific screen is visible.
-    ref.watch(carPlayControllerProvider);
+    // Eagerly initialize the CarPlay controller on iOS only.
+    if (Platform.isIOS) {
+      ref.watch(carPlayControllerProvider);
+    }
 
     return MaterialApp(
       title: 'ClawCar',
